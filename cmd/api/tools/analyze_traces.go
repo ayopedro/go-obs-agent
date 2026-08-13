@@ -32,7 +32,7 @@ type SpanSummary struct {
 	ServiceName   string            `json:"service_name"`
 	DurationMs    float64           `json:"duration_ms"`
 	Error         bool              `json:"error"`
-	Tags          map[string]string `json:"tags,omitempty"`
+	Attributes    map[string]string `json:"attributes,omitempty"`
 }
 
 // TraceResult is the structured output returned by analyze_traces.
@@ -49,25 +49,50 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// jaegerTrace mirrors the subset of the Jaeger HTTP API response we need.
-type jaegerTrace struct {
-	Data []struct {
-		TraceID string `json:"traceID"`
-		Spans   []struct {
-			SpanID        string `json:"spanID"`
-			OperationName string `json:"operationName"`
-			Duration      int64  `json:"duration"` // microseconds
-			Tags          []struct {
-				Key   string `json:"key"`
-				Value any    `json:"value"`
-			} `json:"tags"`
-			Process struct {
-				ServiceName string `json:"serviceName"`
-			} `json:"process"`
-		} `json:"spans"`
-	} `json:"data"`
-	Total  int    `json:"total"`
-	Errors []any  `json:"errors"`
+// tempoTrace mirrors the subset of the Grafana Tempo HTTP API response we need.
+// Tempo returns OTLP JSON: /api/traces/{traceID} → { "resourceSpans": [...] }
+type tempoTrace struct {
+	ResourceSpans []struct {
+		Resource struct {
+			Attributes []otlpAttr `json:"attributes"`
+		} `json:"resource"`
+		ScopeSpans []struct {
+			Spans []struct {
+				SpanID    string     `json:"spanId"`
+				Name      string     `json:"name"`
+				StartTime string     `json:"startTimeUnixNano"`
+				EndTime   string     `json:"endTimeUnixNano"`
+				Status    struct {
+					Code    string `json:"code"`
+					Message string `json:"message,omitempty"`
+				} `json:"status"`
+				Attributes []otlpAttr `json:"attributes"`
+			} `json:"spans"`
+		} `json:"scopeSpans"`
+	} `json:"resourceSpans"`
+}
+
+// otlpAttr is a single OTLP key/value attribute.
+type otlpAttr struct {
+	Key   string `json:"key"`
+	Value struct {
+		StringValue string `json:"stringValue,omitempty"`
+		IntValue    string `json:"intValue,omitempty"`
+		BoolValue   bool   `json:"boolValue,omitempty"`
+	} `json:"value"`
+}
+
+func (a otlpAttr) stringVal() string {
+	if a.Value.StringValue != "" {
+		return a.Value.StringValue
+	}
+	if a.Value.IntValue != "" {
+		return a.Value.IntValue
+	}
+	if a.Value.BoolValue {
+		return "true"
+	}
+	return ""
 }
 
 // NewAnalyzeTracesTool constructs the analyze_traces function tool.
@@ -79,7 +104,7 @@ func NewAnalyzeTracesTool(client HTTPClient) (tool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "analyze_traces",
-			Description: "Fetch and analyze a distributed trace by ID from Jaeger. Returns span-level latency, error flags, and service names to help isolate failing components.",
+			Description: "Fetch and analyze a distributed trace by ID from Grafana Tempo. Returns span-level latency, error flags, and service names to help isolate failing components.",
 		},
 		func(_ tool.Context, input TraceInput) (TraceResult, error) {
 			return runAnalyzeTraces(context.Background(), client, input)
@@ -88,9 +113,9 @@ func NewAnalyzeTracesTool(client HTTPClient) (tool.Tool, error) {
 }
 
 func runAnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) (TraceResult, error) {
-	baseURL := os.Getenv("JAEGER_BASE_URL")
+	baseURL := os.Getenv("TEMPO_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:16686"
+		baseURL = "http://localhost:3200"
 	}
 
 	if input.TraceID == "" {
@@ -102,10 +127,11 @@ func runAnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) 
 	if err != nil {
 		return TraceResult{}, fmt.Errorf("failed to build request: %w", err)
 	}
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return TraceResult{}, fmt.Errorf("jaeger request failed: %w", err)
+		return TraceResult{}, fmt.Errorf("tempo request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -118,53 +144,68 @@ func runAnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return TraceResult{}, fmt.Errorf("jaeger returned %d: %s", resp.StatusCode, string(body))
+		return TraceResult{}, fmt.Errorf("tempo returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	var payload jaegerTrace
+	var payload tempoTrace
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return TraceResult{}, fmt.Errorf("failed to decode jaeger response: %w", err)
+		return TraceResult{}, fmt.Errorf("failed to decode tempo response: %w", err)
 	}
 
-	if len(payload.Data) == 0 {
+	if len(payload.ResourceSpans) == 0 {
 		return TraceResult{
 			TraceID: input.TraceID,
 			Message: "no trace data returned",
 		}, nil
 	}
 
-	trace := payload.Data[0]
-	spans := make([]SpanSummary, 0, len(trace.Spans))
-	var errors []SpanSummary
+	var spans []SpanSummary
+	var errSpans []SpanSummary
 
-	for _, s := range trace.Spans {
-		tags := make(map[string]string)
-		isError := false
-		for _, t := range s.Tags {
-			key := t.Key
-			val := fmt.Sprintf("%v", t.Value)
-			tags[key] = val
-			if key == "error" && (val == "true" || val == "1") {
-				isError = true
+	for _, rs := range payload.ResourceSpans {
+		// Extract service name from resource attributes.
+		serviceName := ""
+		for _, attr := range rs.Resource.Attributes {
+			if attr.Key == "service.name" {
+				serviceName = attr.stringVal()
+				break
 			}
-			if key == "http.status_code" {
-				if val >= "500" {
+		}
+
+		for _, ss := range rs.ScopeSpans {
+			for _, s := range ss.Spans {
+				attrs := make(map[string]string, len(s.Attributes))
+				isError := false
+				for _, attr := range s.Attributes {
+					val := attr.stringVal()
+					attrs[attr.Key] = val
+					if attr.Key == "error" && val == "true" {
+						isError = true
+					}
+					if attr.Key == "http.status_code" && val >= "500" {
+						isError = true
+					}
+				}
+				// Tempo uses STATUS_CODE_ERROR for error spans.
+				if s.Status.Code == "STATUS_CODE_ERROR" {
 					isError = true
 				}
-			}
-		}
 
-		summary := SpanSummary{
-			SpanID:        s.SpanID,
-			OperationName: s.OperationName,
-			ServiceName:   s.Process.ServiceName,
-			DurationMs:    float64(s.Duration) / 1000.0,
-			Error:         isError,
-			Tags:          tags,
-		}
-		spans = append(spans, summary)
-		if isError {
-			errors = append(errors, summary)
+				durationMs := spanDurationMs(s.StartTime, s.EndTime)
+
+				summary := SpanSummary{
+					SpanID:        s.SpanID,
+					OperationName: s.Name,
+					ServiceName:   serviceName,
+					DurationMs:    durationMs,
+					Error:         isError,
+					Attributes:    attrs,
+				}
+				spans = append(spans, summary)
+				if isError {
+					errSpans = append(errSpans, summary)
+				}
+			}
 		}
 	}
 
@@ -172,6 +213,17 @@ func runAnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) 
 		TraceID:   input.TraceID,
 		SpanCount: len(spans),
 		Spans:     spans,
-		Errors:    errors,
+		Errors:    errSpans,
 	}, nil
+}
+
+// spanDurationMs computes duration in milliseconds from OTLP nanosecond timestamps.
+func spanDurationMs(startNano, endNano string) float64 {
+	var start, end int64
+	fmt.Sscanf(startNano, "%d", &start)
+	fmt.Sscanf(endNano, "%d", &end)
+	if start == 0 || end == 0 || end < start {
+		return 0
+	}
+	return float64(end-start) / 1e6
 }

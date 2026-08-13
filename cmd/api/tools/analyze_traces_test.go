@@ -8,35 +8,45 @@ import (
 	"testing"
 )
 
-// jaegerTraceFixture builds a minimal Jaeger JSON payload for a given traceID.
-func jaegerTraceFixture(traceID string, includeErrorSpan bool) string {
-	errorTag := `{"key":"error","value":"false"}`
-	if includeErrorSpan {
-		errorTag = `{"key":"error","value":"true"}`
+// tempoFixture builds a minimal Grafana Tempo OTLP JSON response.
+func tempoFixture(traceID string, errorStatus string, httpStatusCode string) []byte {
+	spans := []map[string]any{
+		{
+			"spanId":             "span1",
+			"name":               "HTTP GET /api/users",
+			"startTimeUnixNano":  "1700000000000000000",
+			"endTimeUnixNano":    "1700000000005000000",
+			"status":             map[string]any{"code": "STATUS_CODE_OK"},
+			"attributes":         []map[string]any{{"key": "http.status_code", "value": map[string]any{"stringValue": "200"}}},
+		},
+		{
+			"spanId":            "span2",
+			"name":              "db.query",
+			"startTimeUnixNano": "1700000000010000000",
+			"endTimeUnixNano":   "1700000000130000000",
+			"status":            map[string]any{"code": errorStatus},
+			"attributes": []map[string]any{
+				{"key": "http.status_code", "value": map[string]any{"stringValue": httpStatusCode}},
+			},
+		},
 	}
-	return `{
-		"data": [{
-			"traceID": "` + traceID + `",
-			"spans": [
-				{
-					"spanID": "span1",
-					"operationName": "HTTP GET /api/users",
-					"duration": 5000,
-					"tags": [{"key":"http.status_code","value":"200"}],
-					"process": {"serviceName": "frontend"}
+
+	payload := map[string]any{
+		"resourceSpans": []map[string]any{
+			{
+				"resource": map[string]any{
+					"attributes": []map[string]any{
+						{"key": "service.name", "value": map[string]any{"stringValue": "api-server"}},
+					},
 				},
-				{
-					"spanID": "span2",
-					"operationName": "db.query",
-					"duration": 120000,
-					"tags": [` + errorTag + `],
-					"process": {"serviceName": "db-service"}
-				}
-			]
-		}],
-		"total": 1,
-		"errors": null
-	}`
+				"scopeSpans": []map[string]any{
+					{"spans": spans},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(payload)
+	return b
 }
 
 func TestRunAnalyzeTraces_HappyPath(t *testing.T) {
@@ -45,13 +55,16 @@ func TestRunAnalyzeTraces_HappyPath(t *testing.T) {
 		if !strings.Contains(r.URL.Path, traceID) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		if r.Header.Get("Accept") != "application/json" {
+			t.Errorf("expected Accept: application/json, got %q", r.Header.Get("Accept"))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(jaegerTraceFixture(traceID, false)))
+		_, _ = w.Write(tempoFixture(traceID, "STATUS_CODE_OK", "200"))
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: traceID})
 	if err != nil {
@@ -64,20 +77,23 @@ func TestRunAnalyzeTraces_HappyPath(t *testing.T) {
 		t.Errorf("expected 2 spans, got %d", result.SpanCount)
 	}
 	if len(result.Errors) != 0 {
-		t.Errorf("expected 0 errors, got %d", len(result.Errors))
+		t.Errorf("expected 0 error spans, got %d", len(result.Errors))
+	}
+	if result.Spans[0].ServiceName != "api-server" {
+		t.Errorf("expected service name 'api-server', got %q", result.Spans[0].ServiceName)
 	}
 }
 
-func TestRunAnalyzeTraces_WithErrors(t *testing.T) {
+func TestRunAnalyzeTraces_WithStatusCodeError(t *testing.T) {
 	traceID := "error-trace"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(jaegerTraceFixture(traceID, true)))
+		_, _ = w.Write(tempoFixture(traceID, "STATUS_CODE_ERROR", "500"))
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: traceID})
 	if err != nil {
@@ -91,13 +107,58 @@ func TestRunAnalyzeTraces_WithErrors(t *testing.T) {
 	}
 }
 
+func TestRunAnalyzeTraces_DurationCalculated(t *testing.T) {
+	traceID := "dur-trace"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := map[string]any{
+			"resourceSpans": []map[string]any{
+				{
+					"resource": map[string]any{
+						"attributes": []map[string]any{
+							{"key": "service.name", "value": map[string]any{"stringValue": "svc"}},
+						},
+					},
+					"scopeSpans": []map[string]any{
+						{
+							"spans": []map[string]any{
+								{
+									"spanId":            "s1",
+									"name":              "op",
+									"startTimeUnixNano": "1000000000", // 1s in ns
+									"endTimeUnixNano":   "2000000000", // 2s in ns → 1000ms
+									"status":            map[string]any{"code": "STATUS_CODE_OK"},
+									"attributes":        []map[string]any{},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		b, _ := json.Marshal(payload)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(b)
+	}))
+	defer srv.Close()
+
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
+
+	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: traceID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Spans[0].DurationMs != 1000.0 {
+		t.Errorf("expected 1000ms duration, got %f", result.Spans[0].DurationMs)
+	}
+}
+
 func TestRunAnalyzeTraces_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: "missing"})
 	if err != nil {
@@ -108,15 +169,15 @@ func TestRunAnalyzeTraces_NotFound(t *testing.T) {
 	}
 }
 
-func TestRunAnalyzeTraces_EmptyData(t *testing.T) {
+func TestRunAnalyzeTraces_EmptyResourceSpans(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":[],"total":0,"errors":null}`))
+		_, _ = w.Write([]byte(`{"resourceSpans":[]}`))
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: "any"})
 	if err != nil {
@@ -141,11 +202,14 @@ func TestRunAnalyzeTraces_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	_, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: "t1"})
 	if err == nil {
 		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "tempo returned 500") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
@@ -156,7 +220,7 @@ func TestRunAnalyzeTraces_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	_, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: "t1"})
 	if err == nil {
@@ -175,36 +239,49 @@ func TestNewAnalyzeTracesTool_ReturnsValidTool(t *testing.T) {
 	if tl.Description() == "" {
 		t.Error("description should not be empty")
 	}
+	if !strings.Contains(tl.Description(), "Tempo") {
+		t.Errorf("description should mention Tempo, got: %q", tl.Description())
+	}
 }
 
-func TestRunAnalyzeTraces_HTTP500TagMarksError(t *testing.T) {
+func TestRunAnalyzeTraces_HTTP500AttributeMarksError(t *testing.T) {
 	traceID := "http500"
-	fixture, _ := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{
-				"traceID": traceID,
-				"spans": []map[string]any{
-					{
-						"spanID":        "s1",
-						"operationName": "POST /checkout",
-						"duration":      3000,
-						"tags":          []map[string]any{{"key": "http.status_code", "value": "503"}},
-						"process":       map[string]any{"serviceName": "checkout-svc"},
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// span with http.status_code=503 but STATUS_CODE_OK — attribute alone should flag error
+		payload := map[string]any{
+			"resourceSpans": []map[string]any{
+				{
+					"resource": map[string]any{
+						"attributes": []map[string]any{
+							{"key": "service.name", "value": map[string]any{"stringValue": "checkout"}},
+						},
+					},
+					"scopeSpans": []map[string]any{
+						{
+							"spans": []map[string]any{
+								{
+									"spanId":            "s1",
+									"name":              "POST /checkout",
+									"startTimeUnixNano": "0",
+									"endTimeUnixNano":   "0",
+									"status":            map[string]any{"code": "STATUS_CODE_OK"},
+									"attributes": []map[string]any{
+										{"key": "http.status_code", "value": map[string]any{"stringValue": "503"}},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
-		},
-		"total":  1,
-		"errors": nil,
-	})
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}
+		b, _ := json.Marshal(payload)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(fixture)
+		_, _ = w.Write(b)
 	}))
 	defer srv.Close()
 
-	t.Setenv("JAEGER_BASE_URL", srv.URL)
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
 
 	result, err := runAnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: traceID})
 	if err != nil {

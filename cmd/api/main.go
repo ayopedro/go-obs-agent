@@ -13,7 +13,6 @@ import (
 	"google.golang.org/adk/cmd/launcher/full"
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/geminitool"
 	"google.golang.org/genai"
 
 	"github.com/ayopedro/go-obs-agent/cmd/api/tools"
@@ -70,7 +69,6 @@ func run() error {
 		- Tone: Professional, direct, and deeply technical. Skip conversational filler.
 		`,
 		Tools: []tool.Tool{
-			geminitool.GoogleSearch{},
 			analyzeTracesTool,
 			queryMetricsTool,
 			inspectLogsTool,
