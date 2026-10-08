@@ -1,37 +1,108 @@
 # go-obs-agent
 
-A lightweight Go-based observability agent designed to analyze traces, metrics, and logs and surface actionable diagnostics.
+A Go observability agent that investigates incidents using Tempo traces,
+Prometheus metrics, and Loki logs. Telemetry functions are independent of the
+LLM runtime; GitHub Copilot SDK provides orchestration and configurable inference.
 
-## Objective
+## Project structure
 
-Build an intelligent agent that helps identify and explain system issues by correlating:
-
-- distributed traces
-- telemetry metrics
-- application and infrastructure logs
-
-The agent is intended to serve as a first-pass observability analyst for incident investigation and root cause diagnosis.
-
-## What this repo contains
-
-- `cmd/api/main.go` — entrypoint for an LLM-powered observability agent using Google ADK and Gemini
-- `go.mod` — Go module configuration and dependencies
-
-## Key capabilities
-
-- Analyze trace data to isolate failing components and request paths
-- Review metrics around incident timestamps to verify system health
-- Inspect logs and correlate events with traces and metrics
-- Produce concise, data-driven root cause summaries and remediation steps
+- `internal/telemetry` — plain Go functions: `AnalyzeTraces`, `QueryMetrics`, and
+  `InspectLogs`, accepting `context.Context`, an injectable HTTP client, and typed
+  inputs. A nil client uses a 15-second timeout. No agent SDK dependency.
+- `internal/agent` — Copilot tool adapters, diagnostic instructions, configuration,
+  and session lifecycle.
+- `cmd/api` — interactive console or one-shot incident investigation.
 
 ## Prerequisites
 
-- Go 1.26 or later
-- `GEMINI_API_KEY` environment variable set for Gemini access
+- Go 1.26.2 or later.
+- Copilot CLI installed (`copilot` on PATH or `COPILOT_CLI_PATH` set).
+- For Copilot inference: authenticate using `copilot login` and have appropriate
+  Copilot access. Company policies must allow CLI/SDK use with incident telemetry.
+- Running Tempo, Prometheus, and Loki containing the telemetry to investigate.
 
-## Run locally
+The SDK is pinned in `go.mod`. See the [official Go SDK](https://github.com/github/copilot-sdk/tree/main/go)
+for compatible CLI setup and supported custom provider capabilities.
+
+## Run with Copilot
+
+From the repository root:
 
 ```bash
-cd ./go-obs-agent/cmd/api
-GEMINI_API_KEY="your_api_key_here" go run main.go
+export LLM_PROVIDER=copilot
+# Optional: choose a model available to your Copilot account.
+# export LLM_MODEL=your-approved-model
+export TEMPO_BASE_URL=http://localhost:3200
+export PROMETHEUS_BASE_URL=http://localhost:9090
+export LOKI_BASE_URL=http://localhost:3100
+
+go run ./cmd/api
 ```
+
+Enter an incident description, trace ID, relevant service labels, and incident
+window where known. Use `/quit`, Ctrl+C, or EOF to exit. For one-shot use:
+
+```bash
+go run ./cmd/api 'Investigate trace TRACE_ID for checkout; correlate errors with metrics and logs.'
+```
+
+The app handles SIGTERM and cancels requests during shutdown. Each investigation
+has a five-minute deadline. The agent can use only the three telemetry tools;
+built-in shell, file-editing, and unrelated tools are excluded. Runtime config
+discovery is disabled. Requests requiring managed approval are denied rather
+than automatically approved.
+
+## Custom model providers
+
+Keep the same telemetry functions and Copilot orchestration while choosing a
+custom inference endpoint. Supported provider types are `openai` (including
+compatible gateways/local servers), `azure`, and `anthropic`.
+
+```bash
+export LLM_PROVIDER=openai
+export LLM_MODEL=your-approved-model
+export LLM_BASE_URL=https://your-approved-gateway.example/v1
+export LLM_API_KEY=your-key
+# Optional for openai/azure: completions (SDK default) or responses.
+export LLM_WIRE_API=completions
+
+go run ./cmd/api
+```
+
+Custom providers require a model and base URL. The API key is optional for
+endpoints that do not require it, such as local servers. For Azure, optionally
+set `LLM_AZURE_API_VERSION`; leave it empty for the SDK's default route. Use a
+model supporting tool calling. Custom inference uses the provider's credentials
+and billing, rather than a Copilot subscription; the Copilot CLI is still required.
+Actual model availability and endpoint compatibility depend on your provider.
+There is no automatic fallback to another provider.
+
+`.env.example` documents all settings. `.env` files are not loaded automatically;
+export variables in your shell. Gemini API keys and Google ADK are no longer used.
+
+## Telemetry behavior and limits
+
+The app queries existing data; it does not collect telemetry or start backends.
+Backend clients currently do not configure authentication or tenant headers; use
+local backends or a gateway providing these for the configured endpoints.
+
+Trace results retain span parents and timestamps so the agent can correlate
+metrics and logs around the incident. Numeric and named span status codes are
+supported. Conclusions must cite evidence, distinguish hypotheses from confirmed
+findings, and acknowledge missing or partial data.
+
+Each backend response is limited to 4 MiB and each tool result to 64 KiB of JSON.
+Logs are capped at 100 lines. Outputs exceeding the budget retain a subset and
+set `truncated: true`; reaching the log query limit also marks results as
+potentially incomplete. Trace `span_count` describes the full decoded trace;
+log `total` describes returned lines. Narrow queries when results are partial.
+
+## Checks
+
+```bash
+go test -race -cover ./...
+go vet ./...
+```
+
+Tests exercise telemetry through local HTTP fixtures and test provider
+configuration, tool restrictions, and cancellation without live LLM credentials.
