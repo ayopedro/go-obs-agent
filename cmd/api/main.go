@@ -13,8 +13,9 @@ import (
 	"google.golang.org/adk/cmd/launcher/full"
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/geminitool"
 	"google.golang.org/genai"
+
+	"github.com/ayopedro/go-obs-agent/cmd/api/tools"
 )
 
 func main() {
@@ -35,6 +36,21 @@ func run() error {
 		return fmt.Errorf("failed to create model: %w", err)
 	}
 
+	analyzeTracesTool, err := tools.NewAnalyzeTracesTool(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create analyze_traces tool: %w", err)
+	}
+
+	queryMetricsTool, err := tools.NewQueryMetricsTool(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create query_metrics tool: %w", err)
+	}
+
+	inspectLogsTool, err := tools.NewInspectLogsTool(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create inspect_logs tool: %w", err)
+	}
+
 	cfg := llmagent.Config{
 		Name:        "observability_agent",
 		Model:       model,
@@ -53,7 +69,9 @@ func run() error {
 		- Tone: Professional, direct, and deeply technical. Skip conversational filler.
 		`,
 		Tools: []tool.Tool{
-			geminitool.GoogleSearch{}, // TODO: create sub tools
+			analyzeTracesTool,
+			queryMetricsTool,
+			inspectLogsTool,
 		},
 	}
 
