@@ -177,8 +177,11 @@ func runAnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) 
 					if attr.Key == "error" && val == "true" {
 						isError = true
 					}
-					if attr.Key == "http.status_code" && val >= "500" {
-						isError = true
+					if attr.Key == "http.status_code" {
+						var code int
+						if _, err := fmt.Sscanf(val, "%d", &code); err == nil && code >= 500 {
+							isError = true
+						}
 					}
 				}
 				// Tempo uses STATUS_CODE_ERROR for error spans.
