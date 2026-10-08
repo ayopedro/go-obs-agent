@@ -106,3 +106,34 @@ go vet ./...
 
 Tests exercise telemetry through local HTTP fixtures and test provider
 configuration, tool restrictions, and cancellation without live LLM credentials.
+
+## Local demo without telemetry backends
+
+The fixture server serves a synthetic checkout incident with an exhausted database
+connection pool. It is an API stub, not a real observability stack: it does not
+execute PromQL/LogQL or enforce query time windows. It is intended to smoke-test
+SDK integration and tool calls. Prometheus fixtures support only the three exact
+metric names below; Loki always returns the incident log.
+
+Terminal 1:
+
+```bash
+go run ./cmd/demo
+```
+
+Terminal 2 (authenticate with `copilot login` first if needed):
+
+```bash
+export LLM_PROVIDER=copilot
+export TEMPO_BASE_URL=http://127.0.0.1:4319
+export PROMETHEUS_BASE_URL=http://127.0.0.1:4319
+export LOKI_BASE_URL=http://127.0.0.1:4319
+
+go run ./cmd/api 'Investigate trace 0123456789abcdef0123456789abcdef for checkout. Compare db_pool_active_connections, db_pool_max_connections, and process_cpu_usage around the trace timestamps; inspect logs with {service="checkout"}. Cite the evidence and distinguish findings from hypotheses.'
+```
+
+Expected evidence: a failed `db.acquire_connection` span, active/max pool counts
+both 100, CPU usage 0.12, and a connection-pool timeout log. The agent should identify
+pool exhaustion, without asserting why the pool became exhausted. This run uses
+live model inference and your configured account's allowance or provider billing.
+Stop the demo with Ctrl+C. Switch the three backend URLs back when testing real data.
