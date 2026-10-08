@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/github/copilot-sdk/go v1.0.17
+	github.com/golang-jwt/jwt/v5 v5.3.0
 )
 
 require (

@@ -137,3 +137,10 @@ both 100, CPU usage 0.12, and a connection-pool timeout log. The agent should id
 pool exhaustion, without asserting why the pool became exhausted. This run uses
 live model inference and your configured account's allowance or provider billing.
 Stop the demo with Ctrl+C. Switch the three backend URLs back when testing real data.
+
+## Teams and Slack
+
+Run `go run ./cmd/server` to expose authenticated Teams and Slack message adapters.
+Each accepted message runs a separate investigation and replies in the originating
+conversation. Setup, app manifest templates, and current hosting limits are in
+[Chat interfaces](docs/chat-interfaces.md). The local console remains available.
