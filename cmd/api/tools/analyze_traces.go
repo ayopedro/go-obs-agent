@@ -15,14 +15,9 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 )
 
-// TraceInput defines the parameters accepted by the analyze_traces tool.
 type TraceInput struct {
 	// TraceID is the distributed trace identifier to look up (required).
 	TraceID string `json:"trace_id" jsonschema:"The distributed trace ID to analyze"`
-	// StartTime is the window start in RFC3339 format (optional; defaults to 15 minutes before EndTime).
-	StartTime string `json:"start_time,omitempty" jsonschema:"Window start time in RFC3339 format (e.g. 2006-01-02T15:04:05Z)"`
-	// EndTime is the window end in RFC3339 format (optional; defaults to now).
-	EndTime string `json:"end_time,omitempty" jsonschema:"Window end time in RFC3339 format (e.g. 2006-01-02T15:04:05Z)"`
 }
 
 // SpanSummary is a condensed view of a single trace span.
