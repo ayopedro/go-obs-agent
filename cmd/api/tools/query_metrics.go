@@ -106,7 +106,7 @@ func runQueryMetrics(ctx context.Context, client HTTPClient, input MetricsInput)
 		}
 	}
 
-	step := "60"
+	step := "60s"
 	if input.Step != "" {
 		step = input.Step
 	}
