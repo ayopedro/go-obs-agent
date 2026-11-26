@@ -131,6 +131,21 @@ so deployments never run two copies. Pending jobs are lost on restart.
 `/healthz` only confirms the process is up, not that credentials, the LLM, or
 telemetry backends work.
 
+## Data redaction
+
+Prompts, tool results and tool errors are scrubbed before they reach the model
+provider. It replaces:
+
+- private keys, JWTs, `Bearer`/`Basic` tokens, AWS keys, GitHub, Slack and `sk-` API keys
+- values of keys named like `password`, `secret`, `token`, `api_key`, `authorization`
+- passwords inside URLs (`scheme://user:pass@host`)
+- email addresses
+
+Redaction runs on every provider and is always on. Each `tool.call` audit record
+includes a `redactions` count. It is pattern-based, so it does not catch names,
+IP addresses, or secrets with no recognizable shape. Combine it with
+a tight `allowed_tools` list and with your provider's data-handling terms.
+
 ## Audit logging
 
 The server writes one JSON record per line to stdout (CloudWatch on ECS). Audit

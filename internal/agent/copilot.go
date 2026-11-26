@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ayopedro/go-obs-agent/internal/audit"
+	"github.com/ayopedro/go-obs-agent/internal/redact"
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
 )
@@ -110,6 +111,7 @@ func (e *copilotEngine) Investigate(ctx context.Context, prompt string) (string,
 	turnCtx, cancel := context.WithTimeout(ctx, investigationTO)
 	defer cancel()
 	started := time.Now()
+	prompt, _ = redact.Text(prompt)
 	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "provider", "copilot")...)
 	finish := func(outcome string) {
 		audit.Log(ctx, "agent.completed", "outcome", outcome, "duration_ms", time.Since(started).Milliseconds())
