@@ -50,26 +50,30 @@ type HTTPClient interface {
 
 // tempoTrace mirrors the subset of the Grafana Tempo HTTP API response we need.
 // Tempo returns OTLP JSON: /api/traces/{traceID} → { "resourceSpans": [...] }
+// Tempo 2.x returns the same items under "batches" instead.
 type tempoTrace struct {
-	ResourceSpans []struct {
-		Resource struct {
+	ResourceSpans []resourceSpan `json:"resourceSpans"`
+	Batches       []resourceSpan `json:"batches"`
+}
+
+type resourceSpan struct {
+	Resource struct {
+		Attributes []otlpAttr `json:"attributes"`
+	} `json:"resource"`
+	ScopeSpans []struct {
+		Spans []struct {
+			SpanID       string `json:"spanId"`
+			ParentSpanID string `json:"parentSpanId"`
+			Name         string `json:"name"`
+			StartTime    string `json:"startTimeUnixNano"`
+			EndTime      string `json:"endTimeUnixNano"`
+			Status       struct {
+				Code    statusCode `json:"code"`
+				Message string     `json:"message,omitempty"`
+			} `json:"status"`
 			Attributes []otlpAttr `json:"attributes"`
-		} `json:"resource"`
-		ScopeSpans []struct {
-			Spans []struct {
-				SpanID       string `json:"spanId"`
-				ParentSpanID string `json:"parentSpanId"`
-				Name         string `json:"name"`
-				StartTime    string `json:"startTimeUnixNano"`
-				EndTime      string `json:"endTimeUnixNano"`
-				Status       struct {
-					Code    statusCode `json:"code"`
-					Message string     `json:"message,omitempty"`
-				} `json:"status"`
-				Attributes []otlpAttr `json:"attributes"`
-			} `json:"spans"`
-		} `json:"scopeSpans"`
-	} `json:"resourceSpans"`
+		} `json:"spans"`
+	} `json:"scopeSpans"`
 }
 
 // otlpAttr is a single OTLP key/value attribute.
@@ -146,6 +150,9 @@ func AnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) (Tr
 		return TraceResult{}, fmt.Errorf("failed to decode tempo response: %w", err)
 	}
 
+	if len(payload.ResourceSpans) == 0 {
+		payload.ResourceSpans = payload.Batches
+	}
 	if len(payload.ResourceSpans) == 0 {
 		return TraceResult{
 			TraceID: input.TraceID,
