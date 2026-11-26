@@ -167,5 +167,10 @@ For local testing without a chat platform, set `WEB_UI=true` and open
 `http://localhost:8080/`: a single page with a prompt box and the answer. It has
 no login and refuses non-localhost requests, so never expose it publicly.
 
+Shortcuts (they load `.env` for you; run `make help` for all): `make run`,
+`make dev` (live reload with [air](https://github.com/air-verse/air)), `make demo`,
+`make api PROMPT='...'`, `make test`, `make image`, `make container-run`
+(`CONTAINER=podman` to use podman).
+
 To deploy it (Docker, AWS ECS task definition, troubleshooting), see the
 [Deployment guide](docs/deployment.md).
