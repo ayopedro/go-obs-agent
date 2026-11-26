@@ -15,6 +15,7 @@ import (
 	"github.com/ayopedro/go-obs-agent/internal/agent"
 	"github.com/ayopedro/go-obs-agent/internal/audit"
 	"github.com/ayopedro/go-obs-agent/internal/chat"
+	"github.com/ayopedro/go-obs-agent/internal/webui"
 )
 
 type investigator struct{ cfg agent.Config }
@@ -41,12 +42,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	access, err := chat.ParseAccess(os.Getenv("ALLOWED_USERS"), os.Getenv("ALLOWED_CHANNELS"), os.Getenv("ACCESS_ALLOW_ALL") == "true")
-	if err != nil {
-		return err
-	}
 	service := chat.NewService(ctx, investigator{cfg})
-	service.Access = access
 	defer func() { stop(); service.Wait() }()
 	mux := http.NewServeMux()
 	client := chat.HTTPClient()
@@ -67,8 +63,19 @@ func run() error {
 		mux.Handle("/teams/messages", &chat.Teams{AppID: appID, AppSecret: appSecret, TenantID: tenant, Service: service, Client: client, Auth: &chat.TeamsAuth{AppID: appID, Client: client}})
 		enabled++
 	}
+	if enabled > 0 {
+		access, err := chat.ParseAccess(os.Getenv("ALLOWED_USERS"), os.Getenv("ALLOWED_CHANNELS"), os.Getenv("ACCESS_ALLOW_ALL") == "true")
+		if err != nil {
+			return err
+		}
+		service.Access = access
+	}
+	if os.Getenv("WEB_UI") == "true" {
+		webui.Register(mux, investigator{cfg})
+		enabled++
+	}
 	if enabled == 0 {
-		return fmt.Errorf("configure at least one chat interface; see .env.example")
+		return fmt.Errorf("configure at least one chat interface or set WEB_UI=true; see .env.example")
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok\n")) })
 	addr := os.Getenv("HTTP_ADDR")
