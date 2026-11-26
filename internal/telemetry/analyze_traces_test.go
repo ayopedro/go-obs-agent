@@ -275,3 +275,17 @@ func TestRunAnalyzeTraces_HTTP500AttributeMarksError(t *testing.T) {
 		t.Error("expected span with http.status_code=503 to be counted as an error")
 	}
 }
+
+func TestRunAnalyzeTraces_BatchesFormat(t *testing.T) {
+	body := strings.Replace(string(tempoFixture("abc", "STATUS_CODE_OK", "200")), `"resourceSpans"`, `"batches"`, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	t.Setenv("TEMPO_BASE_URL", srv.URL)
+
+	result, err := AnalyzeTraces(t.Context(), srv.Client(), TraceInput{TraceID: "abc"})
+	if err != nil || result.SpanCount != 2 {
+		t.Fatalf("err=%v spans=%d", err, result.SpanCount)
+	}
+}
