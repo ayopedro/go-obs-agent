@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,6 +95,10 @@ func (t *Teams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		endpoint := strings.TrimRight(a.ServiceURL, "/") + "/v3/conversations/" + url.PathEscape(a.Conversation.ID) + "/activities/" + url.PathEscape(a.ID)
 		return postJSON(ctx, t.Client, endpoint, token, map[string]any{"type": "message", "text": text, "textFormat": "plain", "replyToId": a.ID, "from": a.Recipient, "recipient": a.From, "conversation": a.Conversation}, nil)
 	})
+	if errors.Is(err, ErrForbidden) {
+		w.WriteHeader(200) // acknowledge so the platform does not retry
+		return
+	}
 	if err != nil {
 		http.Error(w, "service busy; retry later", 503)
 		return
