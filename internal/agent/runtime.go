@@ -111,6 +111,9 @@ func (e *loopEngine) Investigate(ctx context.Context, prompt string) (string, er
 	ctx, cancel := context.WithTimeout(ctx, investigationTO)
 	defer cancel()
 	prompt, _ = redact.Text(prompt)
+	if gate(ctx, prompt) {
+		return refusal, nil
+	}
 	session := e.provider.NewSession(currentInstructions(), e.box.order)
 	started := time.Now()
 	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "model", e.model, "tools", len(e.box.order))...)
@@ -150,7 +153,7 @@ func (e *loopEngine) Investigate(ctx context.Context, prompt string) (string, er
 }
 
 func finalText(r Reply) (string, error) {
-	text := strings.TrimSpace(r.Text)
+	text, _ := redact.Text(strings.TrimSpace(r.Text))
 	if text == "" {
 		return "", fmt.Errorf("agent completed without a response")
 	}

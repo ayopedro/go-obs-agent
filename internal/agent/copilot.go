@@ -112,6 +112,9 @@ func (e *copilotEngine) Investigate(ctx context.Context, prompt string) (string,
 	defer cancel()
 	started := time.Now()
 	prompt, _ = redact.Text(prompt)
+	if gate(ctx, prompt) {
+		return refusal, nil
+	}
 	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "provider", "copilot")...)
 	finish := func(outcome string) {
 		audit.Log(ctx, "agent.completed", "outcome", outcome, "duration_ms", time.Since(started).Milliseconds())
@@ -134,7 +137,8 @@ func (e *copilotEngine) Investigate(ctx context.Context, prompt string) (string,
 		return "", fmt.Errorf("unexpected agent response")
 	}
 	finish("answered")
-	return message.Content, nil
+	answer, _ := redact.Text(message.Content)
+	return answer, nil
 }
 
 func (e *copilotEngine) Close() error {
