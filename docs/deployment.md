@@ -110,6 +110,8 @@ container. `.env` is for local runs only; it is excluded from the image by
    endpoint and deployment name). Change `LLM_PROVIDER` if you do not use `azure`.
    Outside Azure there is no managed identity, so keep `LLM_API_KEY` as a secret.
    Remove the Slack or Teams variables and secrets you do not use.
+   Remove the `*_USERNAME`/`*_PASSWORD` secrets for backends that need no auth, and set
+   `ALLOWED_USERS` to the user IDs allowed to query the agent.
 2. Create an ECR repository, then build, tag, and push the image.
 3. Create the Secrets Manager secrets referenced in `secrets`, the
    `/ecs/go-obs-agent` log group, and two IAM roles. The execution role needs
