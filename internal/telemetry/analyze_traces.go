@@ -118,6 +118,9 @@ func AnalyzeTraces(ctx context.Context, client HTTPClient, input TraceInput) (Tr
 	if err != nil {
 		return TraceResult{}, fmt.Errorf("failed to build request: %w", err)
 	}
+	if err := setAuth(req, "TEMPO"); err != nil {
+		return TraceResult{}, err
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
