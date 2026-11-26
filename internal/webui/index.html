@@ -1,35 +1,183 @@
 <!doctype html>
+<html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>go-obs-agent</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
-  textarea { width: 100%; box-sizing: border-box; min-height: 8rem; font: inherit; padding: .5rem; }
-  button { font: inherit; padding: .4rem 1rem; margin-top: .5rem; }
-  pre { white-space: pre-wrap; word-wrap: break-word; background: #f4f4f4; padding: 1rem; border-radius: 6px; }
-  .err { color: #b00020; }
-  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } pre { background: #222; } textarea { background: #1b1b1b; color: #eee; } }
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8; --panel: #fff; --text: #1f2328; --muted: #6b7280; --border: #e3e5e8;
+    --user: #2563eb; --user-text: #fff; --bot: #fff; --code: #f1f3f5; --err: #b00020; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #8b949e; --border: #30363d;
+            --user: #2f6feb; --bot: #161b22; --code: #0d1117; --err: #ff7b72; --accent: #58a6ff; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: .75rem; padding: .75rem 1rem; background: var(--panel);
+           border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 1rem; margin: 0; flex: 1; }
+  header small { color: var(--muted); font-weight: normal; }
+  button { font: inherit; cursor: pointer; }
+  .ghost { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: .25rem .7rem; }
+  .ghost:hover { border-color: var(--accent); }
+  main { flex: 1; overflow-y: auto; padding: 1.25rem 1rem; scroll-behavior: smooth; }
+  #log { max-width: 48rem; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem; }
+  .msg { display: flex; flex-direction: column; max-width: 85%; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.bot { align-self: flex-start; }
+  .bubble { padding: .65rem .9rem; border-radius: 14px; border: 1px solid var(--border); overflow-wrap: anywhere; }
+  .user .bubble { background: var(--user); color: var(--user-text); border-color: var(--user); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+  .bot .bubble { background: var(--bot); border-bottom-left-radius: 4px; }
+  .bot .bubble > :first-child { margin-top: 0; } .bot .bubble > :last-child { margin-bottom: 0; }
+  .bubble p, .bubble ul, .bubble ol, .bubble pre, .bubble h3, .bubble h4 { margin: .6em 0; }
+  .bubble h3 { font-size: 1.05em; } .bubble h4 { font-size: 1em; }
+  .bubble pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: .65rem .8rem; overflow-x: auto; }
+  .bubble code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: .1em .35em; border-radius: 4px; }
+  .bubble pre code { background: none; padding: 0; }
+  .meta { font-size: .75rem; color: var(--muted); margin-top: .25rem; display: flex; gap: .75rem; }
+  .meta button { background: none; border: 0; color: var(--muted); padding: 0; }
+  .meta button:hover { color: var(--accent); }
+  .error .bubble { border-color: var(--err); color: var(--err); }
+  .dots span { display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite both; }
+  .dots span:nth-child(2) { animation-delay: .2s; } .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .dots span { animation: none; } main { scroll-behavior: auto; } }
+  .empty { text-align: center; color: var(--muted); margin-top: 12vh; }
+  .empty h2 { color: var(--text); font-size: 1.3rem; margin-bottom: .25rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin-top: 1rem; }
+  .chips button { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: .4rem .9rem; }
+  .chips button:hover { border-color: var(--accent); }
+  form { background: var(--panel); border-top: 1px solid var(--border); padding: .75rem 1rem 1rem; }
+  .composer { max-width: 48rem; margin: 0 auto; display: flex; gap: .5rem; align-items: flex-end;
+              border: 1px solid var(--border); border-radius: 14px; padding: .4rem .4rem .4rem .8rem; background: var(--bg); }
+  .composer:focus-within { border-color: var(--accent); }
+  textarea { flex: 1; border: 0; outline: 0; resize: none; background: none; color: inherit; font: inherit;
+             max-height: 10rem; padding: .35rem 0; }
+  #send { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: .45rem .9rem; }
+  #send:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { max-width: 48rem; margin: .4rem auto 0; font-size: .75rem; color: var(--muted); }
 </style>
-<h1>Investigate</h1>
-<form id="f">
-  <textarea id="p" placeholder="e.g. Investigate trace 0123456789abcdef0123456789abcdef for checkout" required></textarea>
-  <button id="b">Investigate</button>
+<header>
+  <h1>go-obs-agent <small>observability investigations</small></h1>
+  <button id="clear" class="ghost" type="button">New chat</button>
+</header>
+<main id="scroller"><div id="log" aria-live="polite"></div></main>
+<form id="form">
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Ask about a trace, metric or log…" aria-label="Message" autofocus></textarea>
+    <button id="send" type="submit">Send</button>
+  </div>
+  <div class="hint">Enter to send, Shift+Enter for a new line. Each question is investigated independently; earlier messages are not sent as context.</div>
 </form>
-<p id="s" role="status"></p>
-<pre id="a" hidden></pre>
 <script>
-const f = document.getElementById('f'), p = document.getElementById('p'), b = document.getElementById('b'),
-      s = document.getElementById('s'), a = document.getElementById('a');
-f.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  b.disabled = true; a.hidden = true; s.className = ''; s.textContent = 'Investigating… this can take a few minutes.';
+const $ = (id) => document.getElementById(id);
+const log = $('log'), input = $('input'), send = $('send'), scroller = $('scroller');
+const examples = [
+  'Investigate trace 0123456789abcdef0123456789abcdef for checkout. Compare db_pool_active_connections, db_pool_max_connections and process_cpu_usage, and inspect logs with {service="checkout"}.',
+  'Why is checkout slow? Cite evidence and separate findings from hypotheses.',
+];
+let busy = false;
+
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Minimal, safe markdown: input is escaped first, so only tags generated here reach the DOM.
+function inline(s) {
+  return s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+function markdown(text) {
+  const out = [], lines = esc(text).split('\n');
+  let list = null, code = null;
+  const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const line of lines) {
+    if (code !== null) {
+      if (line.startsWith('```')) { out.push(`<pre><code>${code.join('\n')}</code></pre>`); code = null; } else code.push(line);
+      continue;
+    }
+    let m;
+    if (line.startsWith('```')) { close(); code = []; }
+    else if ((m = line.match(/^#{1,2}\s+(.*)/))) { close(); out.push(`<h3>${inline(m[1])}</h3>`); }
+    else if ((m = line.match(/^#{3,6}\s+(.*)/))) { close(); out.push(`<h4>${inline(m[1])}</h4>`); }
+    else if ((m = line.match(/^\s*[-*]\s+(.*)/))) { if (list !== 'ul') { close(); out.push('<ul>'); list = 'ul'; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== 'ol') { close(); out.push('<ol>'); list = 'ol'; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if (line.trim() === '') close();
+    else { close(); out.push(`<p>${inline(line)}</p>`); }
+  }
+  if (code !== null) out.push(`<pre><code>${code.join('\n')}</code></pre>`);
+  close();
+  return out.join('');
+}
+
+function add(kind, html, text) {
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${kind === 'user' ? 'user' : 'bot'}${kind === 'error' ? ' error' : ''}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (kind === 'user') bubble.textContent = text; else bubble.innerHTML = html;
+  wrap.append(bubble);
+  log.append(wrap);
+  scroller.scrollTop = scroller.scrollHeight;
+  return wrap;
+}
+function meta(wrap, buttons) {
+  const m = document.createElement('div');
+  m.className = 'meta';
+  for (const [label, fn] of buttons) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label; b.onclick = () => fn(b);
+    m.append(b);
+  }
+  wrap.append(m);
+}
+
+function showEmpty() {
+  log.innerHTML = '<div class="empty" id="empty"><h2>What should we investigate?</h2><div>Ask about a trace, metric or log.</div><div class="chips"></div></div>';
+  for (const ex of examples) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = ex.length > 60 ? ex.slice(0, 57) + '…' : ex;
+    b.onclick = () => { input.value = ex; fit(); input.focus(); };
+    log.querySelector('.chips').append(b);
+  }
+}
+
+async function ask(prompt) {
+  busy = true; send.disabled = true;
+  $('empty')?.remove();
+  add('user', '', prompt);
+  const pending = add('bot', '<span class="dots" role="status" aria-label="Investigating"><span></span><span></span><span></span></span> <span class="t">Investigating…</span>');
+  const started = Date.now();
+  const timer = setInterval(() => { pending.querySelector('.t').textContent = `Investigating… ${Math.round((Date.now() - started) / 1000)}s`; }, 1000);
   try {
-    const r = await fetch('/api/investigate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p.value }) });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    s.textContent = ''; a.textContent = j.answer; a.hidden = false;
+    const r = await fetch('/api/investigate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`);
+    pending.remove();
+    const done = add('bot', markdown(j.answer));
+    meta(done, [['Copy', (b) => { navigator.clipboard?.writeText(j.answer); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1500); }]]);
   } catch (err) {
-    s.className = 'err'; s.textContent = err.message;
-  } finally { b.disabled = false; }
+    pending.remove();
+    const e = add('error', esc(err.message));
+    meta(e, [['Retry', () => { e.remove(); ask(prompt); }]]);
+  } finally {
+    clearInterval(timer); busy = false; send.disabled = false; input.focus();
+  }
+}
+
+function fit() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
+input.addEventListener('input', fit);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('form').requestSubmit(); }
 });
+$('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const prompt = input.value.trim();
+  if (!prompt || busy) return;
+  input.value = ''; fit();
+  ask(prompt);
+});
+$('clear').addEventListener('click', () => { if (!busy) showEmpty(); });
+showEmpty();
 </script>
