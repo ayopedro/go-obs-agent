@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -95,6 +96,10 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if errors.Is(err, ErrForbidden) {
+		w.WriteHeader(200) // acknowledge so the platform does not retry
+		return
+	}
 	if err != nil {
 		http.Error(w, "service busy; retry later", 503)
 		return

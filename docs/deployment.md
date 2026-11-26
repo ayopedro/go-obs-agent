@@ -131,6 +131,21 @@ so deployments never run two copies. Pending jobs are lost on restart.
 `/healthz` only confirms the process is up, not that credentials, the LLM, or
 telemetry backends work.
 
+## Access control
+
+Slack and Teams only accept requests from the configured workspace or tenant.
+Within it, restrict who can start investigations:
+
+| Variable | Meaning |
+|---|---|
+| `ALLOWED_USERS` | Comma-separated user IDs (Slack `U...`, Teams `29:...`). |
+| `ALLOWED_CHANNELS` | Comma-separated channel or conversation IDs. |
+| `ACCESS_ALLOW_ALL` | `true` allows everyone in the workspace or tenant. |
+
+When both lists are set, a request must match both. The server refuses to start
+if neither list is set and `ACCESS_ALLOW_ALL` is not `true`. Denied requests are
+dropped without a reply and logged as `request.denied` in the audit log.
+
 ## Data redaction
 
 Prompts, tool results and tool errors are scrubbed before they reach the model

@@ -24,6 +24,8 @@ type job struct {
 type Service struct {
 	ctx    context.Context
 	engine Investigator
+	// Access restricts requesters; nil allows everyone.
+	Access *Access
 	jobs   chan job
 	mu     sync.Mutex
 	seen   map[string]time.Time
@@ -44,6 +46,10 @@ var ErrBusy = errors.New("investigation queue is full")
 func (s *Service) Submit(id string, actor audit.Actor, prompt string, reply Reply) error {
 	actor.EventID = id
 	ctx := audit.WithActor(context.Background(), actor)
+	if !s.Access.Permits(actor) {
+		audit.Warn(ctx, "request.denied", "reason", "requester not in allowlist")
+		return ErrForbidden
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
