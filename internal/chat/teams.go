@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 )
 
 type Teams struct {
@@ -61,10 +63,12 @@ func (t *Teams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := t.Auth.Verify(r.Context(), r.Header.Get("Authorization"), a.ServiceURL); err != nil {
+		audit.Warn(r.Context(), "request.denied", "platform", "teams", "reason", "invalid connector authentication", "remote_addr", r.RemoteAddr)
 		http.Error(w, "invalid connector authentication", 401)
 		return
 	}
 	if a.ChannelID != "msteams" || a.ChannelData.Tenant.ID != t.TenantID {
+		audit.Warn(r.Context(), "request.denied", "platform", "teams", "reason", "tenant or channel not allowed", "tenant", a.ChannelData.Tenant.ID)
 		http.Error(w, "tenant or channel not allowed", 403)
 		return
 	}
@@ -82,7 +86,7 @@ func (t *Teams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid message", 400)
 		return
 	}
-	err = t.Service.Submit("teams:"+t.TenantID+":"+a.Conversation.ID+":"+a.ID, prompt, func(ctx context.Context, text string) error {
+	err = t.Service.Submit("teams:"+t.TenantID+":"+a.Conversation.ID+":"+a.ID, audit.Actor{Platform: "teams", Tenant: t.TenantID, Channel: a.Conversation.ID, User: a.From.ID}, prompt, func(ctx context.Context, text string) error {
 		token, err := t.accessToken(ctx)
 		if err != nil {
 			return err

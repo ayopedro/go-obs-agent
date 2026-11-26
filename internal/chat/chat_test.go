@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -121,7 +122,7 @@ func TestQueueBackpressure(t *testing.T) {
 	s := testService(t, engine)
 	reply := func(context.Context, string) error { return nil }
 	for i := range 2 {
-		if err := s.Submit(fmt.Sprint(i), "incident", reply); err != nil {
+		if err := s.Submit(fmt.Sprint(i), audit.Actor{}, "incident", reply); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -129,14 +130,14 @@ func TestQueueBackpressure(t *testing.T) {
 		<-engine.received
 	}
 	for i := range 32 {
-		if err := s.Submit(fmt.Sprint(i+2), "incident", reply); err != nil {
+		if err := s.Submit(fmt.Sprint(i+2), audit.Actor{}, "incident", reply); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if s.Submit("overflow", "incident", reply) != ErrBusy {
+	if s.Submit("overflow", audit.Actor{}, "incident", reply) != ErrBusy {
 		t.Fatal("queue not bounded")
 	}
-	if s.Submit("0", "incident", reply) != nil {
+	if s.Submit("0", audit.Actor{}, "incident", reply) != nil {
 		t.Fatal("duplicate should be acknowledged")
 	}
 }

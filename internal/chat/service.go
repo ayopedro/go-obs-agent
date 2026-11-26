@@ -4,7 +4,8 @@ package chat
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 	"sync"
 	"time"
 )
@@ -14,6 +15,7 @@ type Investigator interface {
 }
 type Reply func(context.Context, string) error
 type job struct {
+	actor  audit.Actor
 	prompt string
 	reply  Reply
 }
@@ -39,7 +41,9 @@ func NewService(ctx context.Context, engine Investigator) *Service {
 
 var ErrBusy = errors.New("investigation queue is full")
 
-func (s *Service) Submit(id, prompt string, reply Reply) error {
+func (s *Service) Submit(id string, actor audit.Actor, prompt string, reply Reply) error {
+	actor.EventID = id
+	ctx := audit.WithActor(context.Background(), actor)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -49,9 +53,11 @@ func (s *Service) Submit(id, prompt string, reply Reply) error {
 		}
 	}
 	if _, ok := s.seen[id]; ok {
+		audit.Log(ctx, "request.duplicate")
 		return nil
 	}
 	if len(s.seen) >= 10000 {
+		audit.Warn(ctx, "request.rejected", "reason", "dedup table full")
 		return ErrBusy
 	}
 	select {
@@ -60,10 +66,12 @@ func (s *Service) Submit(id, prompt string, reply Reply) error {
 	default:
 	}
 	select {
-	case s.jobs <- job{prompt, reply}:
+	case s.jobs <- job{actor, prompt, reply}:
 		s.seen[id] = now
+		audit.Log(ctx, "request.accepted", audit.Prompt(prompt)...)
 		return nil
 	default:
+		audit.Warn(ctx, "request.rejected", "reason", "queue full")
 		return ErrBusy
 	}
 }
@@ -77,18 +85,24 @@ func (s *Service) worker() {
 			if s.ctx.Err() != nil {
 				return
 			}
-			ctx, cancel := context.WithTimeout(s.ctx, 6*time.Minute)
+			ctx, cancel := context.WithTimeout(audit.WithActor(s.ctx, j.actor), 6*time.Minute)
+			started := time.Now()
 			answer, err := s.engine.Investigate(ctx, j.prompt)
 			if err != nil {
-				log.Printf("investigation failed: %T", err)
+				audit.Warn(ctx, "investigation.failed", "error_type", fmt.Sprintf("%T", err), "duration_ms", time.Since(started).Milliseconds())
 				answer = "Investigation failed. Ask the service operator to check the server logs and configuration."
+			}
+			if err == nil {
+				audit.Log(ctx, "investigation.finished", "duration_ms", time.Since(started).Milliseconds(), "answer_chars", len([]rune(answer)))
 			}
 			runes := []rune(answer)
 			if len(runes) > 12000 {
 				answer = string(runes[:12000]) + "\n[Response shortened; narrow the investigation.]"
 			}
 			if err := j.reply(ctx, answer); err != nil {
-				log.Printf("chat delivery failed: %T", err)
+				audit.Warn(ctx, "reply.failed", "error_type", fmt.Sprintf("%T", err))
+			} else {
+				audit.Log(ctx, "reply.delivered")
 			}
 			cancel()
 		}
