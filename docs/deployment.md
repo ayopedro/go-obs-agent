@@ -1,8 +1,7 @@
 # Deployment guide
 
 This guide explains how to run the chat server (`cmd/server`) so people can talk
-to the agent from Slack and Microsoft Teams. It has not been tested against live
-Slack, Teams, or AWS; treat the steps as a starting point and verify each one.
+to the agent from Slack and Microsoft Teams.
 
 ## How it works
 
