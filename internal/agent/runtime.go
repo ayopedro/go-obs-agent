@@ -9,6 +9,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 )
 
 const (
@@ -93,18 +94,35 @@ func (r *Runtime) Investigate(ctx context.Context, prompt string) (string, error
 	defer cancel()
 	messages := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(prompt))}
 	tools := r.toolParams()
-	for range maxTurns {
+	started := time.Now()
+	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "model", r.model, "tools", len(tools))...)
+	var inTok, outTok int64
+	toolCalls := 0
+	done := func(outcome string, turns int) {
+		audit.Log(ctx, "agent.completed", "outcome", outcome, "turns", turns, "tool_calls", toolCalls,
+			"input_tokens", inTok, "output_tokens", outTok, "duration_ms", time.Since(started).Milliseconds())
+	}
+	for turn := 1; turn <= maxTurns; turn++ {
 		resp, err := r.llm.New(ctx, anthropic.MessageNewParams{
 			Model: anthropic.Model(r.model), MaxTokens: maxTokens,
 			System:   []anthropic.TextBlockParam{{Text: instructions}},
 			Messages: messages, Tools: tools,
 		})
 		if err != nil {
+			done("model_error", turn)
 			return "", err
 		}
+		inTok += resp.Usage.InputTokens
+		outTok += resp.Usage.OutputTokens
 		messages = append(messages, resp.ToParam())
 		if resp.StopReason != anthropic.StopReasonToolUse {
-			return finalText(resp)
+			text, err := finalText(resp)
+			if err != nil {
+				done("no_response", turn)
+			} else {
+				done("answered", turn)
+			}
+			return text, err
 		}
 		var results []anthropic.ContentBlockParamUnion
 		for _, block := range resp.Content {
@@ -112,11 +130,13 @@ func (r *Runtime) Investigate(ctx context.Context, prompt string) (string, error
 				continue
 			}
 			use := block.AsToolUse()
+			toolCalls++
 			content, isErr := r.runTool(ctx, use.Name, use.Input)
 			results = append(results, anthropic.NewToolResultBlock(use.ID, content, isErr))
 		}
 		messages = append(messages, anthropic.NewUserMessage(results...))
 	}
+	done("max_turns", maxTurns)
 	return "", fmt.Errorf("investigation did not finish within %d model turns", maxTurns)
 }
 
@@ -124,12 +144,17 @@ func (r *Runtime) Investigate(ctx context.Context, prompt string) (string, error
 func (r *Runtime) runTool(ctx context.Context, name string, input []byte) (string, bool) {
 	tool, ok := r.tools[name]
 	if !ok {
+		audit.Warn(ctx, "tool.unknown", "tool", name)
 		return "unknown tool " + name, true
 	}
+	started := time.Now()
 	out, err := tool.Call(ctx, input)
+	attrs := []any{"tool", name, "args", audit.Truncate(string(input), 1000), "duration_ms", time.Since(started).Milliseconds(), "result_bytes", len(out)}
 	if err != nil {
+		audit.Warn(ctx, "tool.call", append(attrs, "ok", false, "error", audit.Truncate(err.Error(), 300))...)
 		return "tool error: " + err.Error(), true
 	}
+	audit.Log(ctx, "tool.call", append(attrs, "ok", true)...)
 	if len(out) > maxToolResult {
 		out = out[:maxToolResult] + `... [truncated: result exceeded 64 KiB]`
 	}

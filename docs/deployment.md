@@ -124,6 +124,26 @@ so deployments never run two copies. Pending jobs are lost on restart.
 `/healthz` only confirms the process is up, not that credentials, the LLM, or
 telemetry backends work.
 
+## Audit logging
+
+The server writes one JSON record per line to stdout (CloudWatch on ECS). Audit
+records have `"audit": true` and an `event` name; on chat requests they include an
+`actor` with platform, tenant, channel, user, and event ID.
+
+| Event | Meaning |
+| --- | --- |
+| `request.accepted` / `request.duplicate` / `request.rejected` | Message admitted to the queue, ignored as a repeat, or refused (queue full). |
+| `request.denied` | Failed signature or authentication, or wrong workspace or tenant (warning). |
+| `agent.started` / `agent.completed` | Model, prompt hash and length; then outcome, turns, tool calls, token counts, duration. |
+| `tool.call` | Tool name, arguments (truncated to 1000 characters), duration, result size, success or error. |
+| `investigation.finished` / `investigation.failed` | End-to-end result and duration. |
+| `reply.delivered` / `reply.failed` | Whether the answer reached the chat. |
+
+Prompts are recorded as a short hash and length only. Set `AUDIT_LOG_PROMPTS=true`
+to include the text. Tool arguments are always logged, so avoid putting secrets in
+MCP tool inputs. Tool results, API keys, and tokens are never logged. Set a
+retention period on the CloudWatch log group; the service keeps no audit database.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

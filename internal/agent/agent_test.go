@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -162,5 +165,28 @@ func TestLoadMCPConfigValidation(t *testing.T) {
 		if _, err := LoadMCPConfig(write(bad)); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
+	}
+}
+
+func TestInvestigationIsAudited(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	llm := &scripted{replies: []string{reply("echo"), final}}
+	echo := Tool{Name: "echo", Schema: map[string]any{}, Call: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }}
+	ctx := audit.WithActor(t.Context(), audit.Actor{Platform: "slack", User: "U123"})
+	if _, err := newRuntime("m", llm, []Tool{echo}, nil).Investigate(ctx, "secret incident text"); err != nil {
+		t.Fatal(err)
+	}
+	log := buf.String()
+	for _, want := range []string{`"event":"agent.started"`, `"event":"tool.call"`, `"tool":"echo"`, `"event":"agent.completed"`, `"outcome":"answered"`, `"user":"U123"`, `"tool_calls":1`} {
+		if !strings.Contains(log, want) {
+			t.Errorf("missing %s in audit log:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "secret incident text") {
+		t.Error("prompt text logged without opt-in")
 	}
 }
