@@ -159,3 +159,20 @@ func TestCopilotToolHandlerPropagatesCancellation(t *testing.T) {
 		t.Fatal("cancellation lost")
 	}
 }
+
+func TestSecretsAreRedactedBeforeReachingModel(t *testing.T) {
+	leaky := Tool{Name: "leaky", Schema: map[string]any{"type": "object"}, Call: func(context.Context, json.RawMessage) (string, error) {
+		return "db password=hunter2 user bob@example.com", nil
+	}}
+	llm := &fakeProvider{replies: []Reply{call("leaky"), answer}}
+	e := newLoopEngine("m", llm, newToolbox([]Tool{leaky}), nil)
+	if _, err := e.Investigate(t.Context(), "why is token=abc123 failing?"); err != nil {
+		t.Fatal(err)
+	}
+	if p := llm.inputs[0].Prompt; strings.Contains(p, "abc123") {
+		t.Errorf("prompt leaked: %q", p)
+	}
+	if c := llm.inputs[1].Results[0].Content; strings.Contains(c, "hunter2") || strings.Contains(c, "bob@example.com") {
+		t.Errorf("tool result leaked: %q", c)
+	}
+}

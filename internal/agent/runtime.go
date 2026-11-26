@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ayopedro/go-obs-agent/internal/audit"
+	"github.com/ayopedro/go-obs-agent/internal/redact"
 )
 
 const (
@@ -42,10 +43,13 @@ func (b *toolbox) run(ctx context.Context, name string, input []byte) (string, b
 	out, err := tool.Call(ctx, input)
 	attrs := []any{"tool", name, "args", audit.Truncate(string(input), 1000), "duration_ms", time.Since(started).Milliseconds(), "result_bytes", len(out)}
 	if err != nil {
-		audit.Warn(ctx, "tool.call", append(attrs, "ok", false, "error", audit.Truncate(err.Error(), 300))...)
-		return "tool error: " + err.Error(), true
+		msg, _ := redact.Text(err.Error())
+		audit.Warn(ctx, "tool.call", append(attrs, "ok", false, "error", audit.Truncate(msg, 300))...)
+		return "tool error: " + msg, true
 	}
-	audit.Log(ctx, "tool.call", append(attrs, "ok", true)...)
+	// Telemetry can contain secrets or personal data; scrub before the model sees it.
+	out, redactions := redact.Text(out)
+	audit.Log(ctx, "tool.call", append(attrs, "ok", true, "redactions", redactions)...)
 	if len(out) > maxToolResult {
 		out = out[:maxToolResult] + `... [truncated: result exceeded 64 KiB]`
 	}
@@ -106,6 +110,7 @@ func (e *loopEngine) Close() error {
 func (e *loopEngine) Investigate(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, investigationTO)
 	defer cancel()
+	prompt, _ = redact.Text(prompt)
 	session := e.provider.NewSession(instructions, e.box.order)
 	started := time.Now()
 	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "model", e.model, "tools", len(e.box.order))...)
