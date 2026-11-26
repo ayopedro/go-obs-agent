@@ -35,6 +35,13 @@ export LOKI_BASE_URL=http://localhost:3100
 go run ./cmd/api
 ```
 
+Secured backends (for example Grafana Cloud) use HTTP basic auth, configured per
+backend with `TEMPO_USERNAME`/`TEMPO_PASSWORD`, `PROMETHEUS_USERNAME`/`PROMETHEUS_PASSWORD`
+and `LOKI_USERNAME`/`LOKI_PASSWORD`. On Grafana Cloud the username is the
+service's instance ID and the password is an access policy token with read scope
+(find both under your stack's Connections → Data sources → each source's details).
+Credentials are only sent over HTTPS (or to localhost).
+
 Enter an incident description, trace ID, relevant service labels, and incident
 window where known. Use `/quit`, Ctrl+C, or EOF to exit. For one-shot use:
 

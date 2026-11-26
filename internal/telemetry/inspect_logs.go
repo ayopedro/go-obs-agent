@@ -110,6 +110,9 @@ func InspectLogs(ctx context.Context, client HTTPClient, input LogsInput) (LogsR
 	if err != nil {
 		return LogsResult{}, fmt.Errorf("failed to build request: %w", err)
 	}
+	if err := setAuth(req, "LOKI"); err != nil {
+		return LogsResult{}, err
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

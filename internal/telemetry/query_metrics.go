@@ -110,6 +110,9 @@ func QueryMetrics(ctx context.Context, client HTTPClient, input MetricsInput) (M
 	if err != nil {
 		return MetricsResult{}, fmt.Errorf("failed to build request: %w", err)
 	}
+	if err := setAuth(req, "PROMETHEUS"); err != nil {
+		return MetricsResult{}, err
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
