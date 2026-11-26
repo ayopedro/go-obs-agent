@@ -38,6 +38,10 @@
   .bubble pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: .65rem .8rem; overflow-x: auto; }
   .bubble code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: .1em .35em; border-radius: 4px; }
   .bubble pre code { background: none; padding: 0; }
+  .bubble .tbl { overflow-x: auto; margin: .6em 0; }
+  .bubble table { border-collapse: collapse; font-size: .92em; }
+  .bubble th, .bubble td { border: 1px solid var(--border); padding: .3rem .6rem; text-align: left; vertical-align: top; }
+  .bubble th { background: var(--code); }
   .meta { font-size: .75rem; color: var(--muted); margin-top: .25rem; display: flex; gap: .75rem; }
   .meta button { background: none; border: 0; color: var(--muted); padding: 0; }
   .meta button:hover { color: var(--accent); }
@@ -90,14 +94,25 @@ function inline(s) {
 }
 function markdown(text) {
   const out = [], lines = esc(text).split('\n');
-  let list = null, code = null;
-  const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  let list = null, code = null, rows = [];
+  const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const flush = () => {
+    if (!rows.length) return;
+    const head = rows.length > 1 && /^[\s|:-]+$/.test(rows[1]);
+    const tr = (l, t) => `<tr>${cells(l).map((c) => `<${t}>${inline(c)}</${t}>`).join('')}</tr>`;
+    const body = rows.slice(head ? 2 : 0).map((l) => tr(l, 'td')).join('');
+    out.push(`<div class="tbl"><table>${head ? `<thead>${tr(rows[0], 'th')}</thead>` : ''}<tbody>${body}</tbody></table></div>`);
+    rows = [];
+  };
+  const close = () => { flush(); if (list) { out.push(`</${list}>`); list = null; } };
   for (const line of lines) {
     if (code !== null) {
       if (line.startsWith('```')) { out.push(`<pre><code>${code.join('\n')}</code></pre>`); code = null; } else code.push(line);
       continue;
     }
     let m;
+    if (line.trim().startsWith('|')) { if (list) close(); rows.push(line); continue; }
+    if (rows.length) flush();
     if (line.startsWith('```')) { close(); code = []; }
     else if ((m = line.match(/^#{1,2}\s+(.*)/))) { close(); out.push(`<h3>${inline(m[1])}</h3>`); }
     else if ((m = line.match(/^#{3,6}\s+(.*)/))) { close(); out.push(`<h4>${inline(m[1])}</h4>`); }
