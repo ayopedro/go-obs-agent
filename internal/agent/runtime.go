@@ -3,80 +3,152 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
+	"strings"
 	"time"
 
-	copilot "github.com/github/copilot-sdk/go"
-	"github.com/github/copilot-sdk/go/rpc"
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-func sessionConfig(ctx context.Context, c Config) *copilot.SessionConfig {
-	allowed := copilot.NewToolSet().AddCustom("analyze_traces").AddCustom("query_metrics").AddCustom("inspect_logs").ToSlice()
-	return &copilot.SessionConfig{
-		Model: c.Model, Provider: c.providerConfig(), Tools: Tools(ctx, nil), AvailableTools: allowed,
-		ClientName: "go-obs-agent", EnableConfigDiscovery: copilot.Bool(false),
-		SystemMessage:       &copilot.SystemMessageConfig{Mode: "replace", Content: instructions},
-		OnPermissionRequest: telemetryPermission,
-	}
+const (
+	maxTurns        = 15
+	maxTokens       = 4096
+	maxToolResult   = 64 << 10
+	investigationTO = 5 * time.Minute
+)
+
+// messenger is the part of the Anthropic client the loop needs; tests fake it.
+type messenger interface {
+	New(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error)
 }
 
-func telemetryPermission(req copilot.PermissionRequest, _ copilot.PermissionInvocation) (rpc.PermissionDecision, error) {
-	if req.RequiresManagedApproval() {
-		return &rpc.PermissionDecisionDeniedByRules{}, nil
-	}
-	if custom, ok := req.(*rpc.PermissionRequestCustomTool); ok {
-		switch custom.ToolName {
-		case "analyze_traces", "query_metrics", "inspect_logs":
-			return &rpc.PermissionDecisionApproveOnce{}, nil
-		}
-	}
-	return &rpc.PermissionDecisionDeniedByRules{}, nil
+type sdkMessenger struct{ client anthropic.Client }
+
+func (m sdkMessenger) New(ctx context.Context, p anthropic.MessageNewParams) (*anthropic.Message, error) {
+	return m.client.Messages.New(ctx, p)
 }
 
-// Runtime owns orchestration; telemetry functions have no dependency on it.
+// Runtime runs a bounded tool-use loop against Claude. Each Investigate call
+// starts a fresh conversation.
 type Runtime struct {
-	client  *copilot.Client
-	session *copilot.Session
+	model string
+	llm   messenger
+	tools map[string]Tool
+	order []Tool
+	close func()
+}
+
+func newRuntime(model string, llm messenger, tools []Tool, closer func()) *Runtime {
+	r := &Runtime{model: model, llm: llm, tools: map[string]Tool{}, order: tools, close: closer}
+	for _, t := range tools {
+		r.tools[t.Name] = t
+	}
+	return r
 }
 
 func Start(ctx context.Context, cfg Config) (*Runtime, error) {
-	path := cfg.CLIPath
-	if path == "" {
-		var err error
-		path, err = exec.LookPath("copilot")
-		if err != nil {
-			return nil, fmt.Errorf("Copilot CLI not found: install it or set COPILOT_CLI_PATH: %w", err)
-		}
-	}
-	client := copilot.NewClient(&copilot.ClientOptions{Connection: copilot.StdioConnection{Path: path}, LogLevel: "error"})
-	if err := client.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start Copilot runtime: %w", err)
-	}
-	session, err := client.CreateSession(ctx, sessionConfig(ctx, cfg))
+	servers, err := LoadMCPConfig(cfg.MCPConfigPath)
 	if err != nil {
-		_ = client.Stop()
-		return nil, fmt.Errorf("create observability session: %w", err)
+		return nil, err
 	}
-	return &Runtime{client: client, session: session}, nil
+	tools := TelemetryTools(nil)
+	mcpTools, closer, err := ConnectMCP(ctx, servers, os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, mcpTools...)
+	opts := []option.RequestOption{option.WithAPIKey(cfg.APIKey)}
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	return newRuntime(cfg.Model, sdkMessenger{anthropic.NewClient(opts...)}, tools, closer), nil
+}
+
+func (r *Runtime) Close() error {
+	if r.close != nil {
+		r.close()
+	}
+	return nil
+}
+
+func (r *Runtime) toolParams() []anthropic.ToolUnionParam {
+	out := make([]anthropic.ToolUnionParam, 0, len(r.order))
+	for _, t := range r.order {
+		schema := anthropic.ToolInputSchemaParam{Properties: t.Schema["properties"]}
+		if req, ok := t.Schema["required"].([]any); ok {
+			for _, v := range req {
+				if s, ok := v.(string); ok {
+					schema.Required = append(schema.Required, s)
+				}
+			}
+		}
+		out = append(out, anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{Name: t.Name, Description: anthropic.String(t.Description), InputSchema: schema}})
+	}
+	return out
 }
 
 func (r *Runtime) Investigate(ctx context.Context, prompt string) (string, error) {
-	turnCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, investigationTO)
 	defer cancel()
-	event, err := r.session.SendAndWait(turnCtx, copilot.MessageOptions{Prompt: prompt})
-	if err != nil {
-		abortCtx, abortCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer abortCancel()
-		_ = r.session.Abort(abortCtx)
-		return "", err
+	messages := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(prompt))}
+	tools := r.toolParams()
+	for range maxTurns {
+		resp, err := r.llm.New(ctx, anthropic.MessageNewParams{
+			Model: anthropic.Model(r.model), MaxTokens: maxTokens,
+			System:   []anthropic.TextBlockParam{{Text: instructions}},
+			Messages: messages, Tools: tools,
+		})
+		if err != nil {
+			return "", err
+		}
+		messages = append(messages, resp.ToParam())
+		if resp.StopReason != anthropic.StopReasonToolUse {
+			return finalText(resp)
+		}
+		var results []anthropic.ContentBlockParamUnion
+		for _, block := range resp.Content {
+			if block.Type != "tool_use" {
+				continue
+			}
+			use := block.AsToolUse()
+			content, isErr := r.runTool(ctx, use.Name, use.Input)
+			results = append(results, anthropic.NewToolResultBlock(use.ID, content, isErr))
+		}
+		messages = append(messages, anthropic.NewUserMessage(results...))
 	}
-	if event == nil {
-		return "", fmt.Errorf("agent completed without a response")
-	}
-	message, ok := event.Data.(*copilot.AssistantMessageData)
-	if !ok {
-		return "", fmt.Errorf("unexpected agent response")
-	}
-	return message.Content, nil
+	return "", fmt.Errorf("investigation did not finish within %d model turns", maxTurns)
 }
-func (r *Runtime) Close() error { _ = r.session.Disconnect(); return r.client.Stop() }
+
+// runTool never fails the investigation: errors go back to the model as tool errors.
+func (r *Runtime) runTool(ctx context.Context, name string, input []byte) (string, bool) {
+	tool, ok := r.tools[name]
+	if !ok {
+		return "unknown tool " + name, true
+	}
+	out, err := tool.Call(ctx, input)
+	if err != nil {
+		return "tool error: " + err.Error(), true
+	}
+	if len(out) > maxToolResult {
+		out = out[:maxToolResult] + `... [truncated: result exceeded 64 KiB]`
+	}
+	return out, false
+}
+
+func finalText(resp *anthropic.Message) (string, error) {
+	var sb strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			sb.WriteString(block.AsText().Text)
+		}
+	}
+	text := strings.TrimSpace(sb.String())
+	if text == "" {
+		return "", fmt.Errorf("agent completed without a response (stop reason %q)", resp.StopReason)
+	}
+	if resp.StopReason == anthropic.StopReasonMaxTokens {
+		text += "\n\n[Response was cut off at the output token limit.]"
+	}
+	return text, nil
+}
