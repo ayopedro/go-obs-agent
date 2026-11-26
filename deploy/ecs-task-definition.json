@@ -1,0 +1,93 @@
+{
+  "family": "go-obs-agent",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "networkMode": "awsvpc",
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/goObsAgentExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/goObsAgentTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "server",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/go-obs-agent:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "HTTP_ADDR",
+          "value": "0.0.0.0:8080"
+        },
+        {
+          "name": "LLM_PROVIDER",
+          "value": "azure"
+        },
+        {
+          "name": "LLM_BASE_URL",
+          "value": "https://REPLACE_WITH_RESOURCE.openai.azure.com"
+        },
+        {
+          "name": "LLM_MODEL",
+          "value": "REPLACE_WITH_DEPLOYMENT_NAME"
+        },
+        {
+          "name": "TEMPO_BASE_URL",
+          "value": "http://tempo.internal:3200"
+        },
+        {
+          "name": "PROMETHEUS_BASE_URL",
+          "value": "http://prometheus.internal:9090"
+        },
+        {
+          "name": "LOKI_BASE_URL",
+          "value": "http://loki.internal:3100"
+        },
+        {
+          "name": "SLACK_WORKSPACE_ID",
+          "value": "REPLACE_WITH_WORKSPACE_ID"
+        },
+        {
+          "name": "TEAMS_TENANT_ID",
+          "value": "REPLACE_WITH_TENANT_ID"
+        },
+        {
+          "name": "TEAMS_APP_ID",
+          "value": "REPLACE_WITH_BOT_APP_ID"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "LLM_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/llm-api-key"
+        },
+        {
+          "name": "SLACK_SIGNING_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/slack-signing-secret"
+        },
+        {
+          "name": "SLACK_BOT_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/slack-bot-token"
+        },
+        {
+          "name": "TEAMS_APP_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/teams-app-secret"
+        }
+      ],
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/go-obs-agent",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "server"
+        }
+      }
+    }
+  ]
+}

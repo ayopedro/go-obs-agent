@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/ayopedro/go-obs-agent/internal/agent"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 )
 
 func main() {
@@ -21,6 +22,7 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = audit.WithActor(ctx, audit.Actor{Platform: "cli"})
 	cfg, err := agent.LoadConfig(os.Getenv)
 	if err != nil {
 		return err

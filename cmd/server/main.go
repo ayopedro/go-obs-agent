@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ayopedro/go-obs-agent/internal/agent"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 	"github.com/ayopedro/go-obs-agent/internal/chat"
 )
 
@@ -33,11 +35,18 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	slog.SetDefault(audit.NewLogger())
+	audit.LogPrompts = os.Getenv("AUDIT_LOG_PROMPTS") == "true"
 	cfg, err := agent.LoadConfig(os.Getenv)
 	if err != nil {
 		return err
 	}
+	access, err := chat.ParseAccess(os.Getenv("ALLOWED_USERS"), os.Getenv("ALLOWED_CHANNELS"), os.Getenv("ACCESS_ALLOW_ALL") == "true")
+	if err != nil {
+		return err
+	}
 	service := chat.NewService(ctx, investigator{cfg})
+	service.Access = access
 	defer func() { stop(); service.Wait() }()
 	mux := http.NewServeMux()
 	client := chat.HTTPClient()

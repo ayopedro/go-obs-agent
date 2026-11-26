@@ -9,7 +9,7 @@ The HTTP service exposes two adapters to the same `chat.Investigator` interface:
 
 Each request is authenticated, restricted to the configured workspace/tenant, and
 acknowledged after admission to a bounded queue. Two workers each create a fresh
-Copilot runtime/session per investigation, avoiding shared model history. Each
+agent loop and conversation per investigation, avoiding shared model history. Each
 message is a standalone investigation; thread history is not loaded. Include the
 trace ID, service labels, and time window in each request. The same LLM and
 telemetry configuration is used by both interfaces.
@@ -28,9 +28,8 @@ go run ./cmd/server
 
 Expose the service through HTTPS and route the two platform endpoints to it.
 `GET /healthz` checks the HTTP process only, not credentials, LLM access, or backend
-health. Copilot CLI must be installed on the server; provision its approved
-credentials there or use the supported custom inference configuration.
-The HTTP server never initiates an interactive login.
+health. Configure `LLM_PROVIDER` and its settings; see the
+[Deployment guide](deployment.md).
 
 ## Slack
 
@@ -102,7 +101,7 @@ The queue and deduplication are in memory: use one server instance, and expect
 pending jobs to be lost on restart. Shutdown cancels running work. Delivery
 failures are logged without automatic retry; there is no durable result history.
 Results longer than 12,000 characters are explicitly shortened. Add durable jobs,
-shared deduplication, delivery retries, and appropriate hosted Copilot credentials
+shared deduplication, delivery retries, and appropriate LLM credentials
 before scaling this into a production service.
 
 No cloud resources or platform apps are created by running the Go service.

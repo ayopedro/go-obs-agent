@@ -4,62 +4,63 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	copilot "github.com/github/copilot-sdk/go"
 )
 
-// Config chooses inference independently of telemetry collection.
+// Config selects the model provider and optional MCP tool servers.
 type Config struct {
-	Provider        string
-	Model           string
-	BaseURL         string
-	APIKey          string
-	WireAPI         string
+	Provider        string // azure, copilot, or anthropic
+	Model           string // azure: deployment name
+	BaseURL         string // azure: resource endpoint; anthropic: optional gateway
+	APIKey          string // azure: optional (Entra ID when empty); anthropic: required
 	AzureAPIVersion string
-	CLIPath         string
+	CLIPath         string // copilot
+	GitHubToken     string // copilot: non-interactive auth
+	MCPConfigPath   string
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
-	c := Config{Provider: getenv("LLM_PROVIDER"), Model: getenv("LLM_MODEL"), BaseURL: getenv("LLM_BASE_URL"), APIKey: getenv("LLM_API_KEY"), WireAPI: getenv("LLM_WIRE_API"), AzureAPIVersion: getenv("LLM_AZURE_API_VERSION"), CLIPath: getenv("COPILOT_CLI_PATH")}
-	if c.Provider == "" {
-		c.Provider = "copilot"
+	c := Config{
+		Provider: getenv("LLM_PROVIDER"), Model: getenv("LLM_MODEL"), BaseURL: getenv("LLM_BASE_URL"), APIKey: getenv("LLM_API_KEY"),
+		AzureAPIVersion: getenv("LLM_AZURE_API_VERSION"), CLIPath: getenv("COPILOT_CLI_PATH"), GitHubToken: getenv("COPILOT_GITHUB_TOKEN"),
+		MCPConfigPath: getenv("MCP_CONFIG"),
 	}
 	switch c.Provider {
 	case "copilot":
-		if c.BaseURL != "" || c.APIKey != "" || c.WireAPI != "" || c.AzureAPIVersion != "" {
-			return Config{}, fmt.Errorf("custom endpoint settings require LLM_PROVIDER=openai, azure, or anthropic")
+		if c.BaseURL != "" || c.APIKey != "" || c.AzureAPIVersion != "" {
+			return Config{}, fmt.Errorf("LLM_BASE_URL, LLM_API_KEY and LLM_AZURE_API_VERSION do not apply to LLM_PROVIDER=copilot")
 		}
-	case "openai", "azure", "anthropic":
+	case "azure":
 		if c.Model == "" || c.BaseURL == "" {
-			return Config{}, fmt.Errorf("custom providers require LLM_MODEL and LLM_BASE_URL")
+			return Config{}, fmt.Errorf("LLM_PROVIDER=azure requires LLM_MODEL (deployment name) and LLM_BASE_URL (resource endpoint)")
 		}
-		u, err := url.Parse(c.BaseURL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return Config{}, fmt.Errorf("LLM_BASE_URL must be an HTTP(S) endpoint without embedded credentials, query, or fragment")
+		if err := validateURL(c.BaseURL, true); err != nil {
+			return Config{}, err
 		}
-		if c.WireAPI != "" && c.WireAPI != "completions" && c.WireAPI != "responses" {
-			return Config{}, fmt.Errorf("LLM_WIRE_API must be completions or responses")
+	case "anthropic":
+		if c.Model == "" || c.APIKey == "" {
+			return Config{}, fmt.Errorf("LLM_PROVIDER=anthropic requires LLM_MODEL and LLM_API_KEY")
 		}
-		if c.Provider == "anthropic" && c.WireAPI != "" {
-			return Config{}, fmt.Errorf("LLM_WIRE_API only applies to openai and azure")
+		if c.BaseURL != "" {
+			if err := validateURL(c.BaseURL, false); err != nil {
+				return Config{}, err
+			}
 		}
-		if c.AzureAPIVersion != "" && c.Provider != "azure" {
+		if c.AzureAPIVersion != "" {
 			return Config{}, fmt.Errorf("LLM_AZURE_API_VERSION only applies to azure")
 		}
+	case "":
+		return Config{}, fmt.Errorf("set LLM_PROVIDER to azure, copilot, or anthropic")
 	default:
-		return Config{}, fmt.Errorf("unsupported LLM_PROVIDER %q", c.Provider)
+		return Config{}, fmt.Errorf("unsupported LLM_PROVIDER %q: use azure, copilot, or anthropic", c.Provider)
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	return c, nil
 }
 
-func (c Config) providerConfig() *copilot.ProviderConfig {
-	if c.Provider == "copilot" {
-		return nil
+func validateURL(raw string, httpsOnly bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && (httpsOnly || u.Scheme != "http")) || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("LLM_BASE_URL must be an HTTP(S) endpoint without embedded credentials, query, or fragment (HTTPS required for azure)")
 	}
-	p := &copilot.ProviderConfig{Type: c.Provider, BaseURL: c.BaseURL, APIKey: c.APIKey, WireAPI: c.WireAPI}
-	if c.AzureAPIVersion != "" {
-		p.Azure = &copilot.AzureProviderOptions{APIVersion: c.AzureAPIVersion}
-	}
-	return p
+	return nil
 }

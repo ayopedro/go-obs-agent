@@ -3,80 +3,159 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
+	"strings"
 	"time"
 
-	copilot "github.com/github/copilot-sdk/go"
-	"github.com/github/copilot-sdk/go/rpc"
+	"github.com/ayopedro/go-obs-agent/internal/audit"
+	"github.com/ayopedro/go-obs-agent/internal/redact"
 )
 
-func sessionConfig(ctx context.Context, c Config) *copilot.SessionConfig {
-	allowed := copilot.NewToolSet().AddCustom("analyze_traces").AddCustom("query_metrics").AddCustom("inspect_logs").ToSlice()
-	return &copilot.SessionConfig{
-		Model: c.Model, Provider: c.providerConfig(), Tools: Tools(ctx, nil), AvailableTools: allowed,
-		ClientName: "go-obs-agent", EnableConfigDiscovery: copilot.Bool(false),
-		SystemMessage:       &copilot.SystemMessageConfig{Mode: "replace", Content: instructions},
-		OnPermissionRequest: telemetryPermission,
-	}
+const (
+	maxTurns        = 15
+	maxTokens       = 4096
+	maxToolResult   = 64 << 10
+	investigationTO = 5 * time.Minute
+)
+
+// toolbox runs tools by name for every provider and audits each call.
+type toolbox struct {
+	tools map[string]Tool
+	order []Tool
 }
 
-func telemetryPermission(req copilot.PermissionRequest, _ copilot.PermissionInvocation) (rpc.PermissionDecision, error) {
-	if req.RequiresManagedApproval() {
-		return &rpc.PermissionDecisionDeniedByRules{}, nil
+func newToolbox(tools []Tool) *toolbox {
+	b := &toolbox{tools: map[string]Tool{}, order: tools}
+	for _, t := range tools {
+		b.tools[t.Name] = t
 	}
-	if custom, ok := req.(*rpc.PermissionRequestCustomTool); ok {
-		switch custom.ToolName {
-		case "analyze_traces", "query_metrics", "inspect_logs":
-			return &rpc.PermissionDecisionApproveOnce{}, nil
-		}
-	}
-	return &rpc.PermissionDecisionDeniedByRules{}, nil
+	return b
 }
 
-// Runtime owns orchestration; telemetry functions have no dependency on it.
-type Runtime struct {
-	client  *copilot.Client
-	session *copilot.Session
+// run never fails the investigation: errors go back to the model as tool errors.
+func (b *toolbox) run(ctx context.Context, name string, input []byte) (string, bool) {
+	tool, ok := b.tools[name]
+	if !ok {
+		audit.Warn(ctx, "tool.unknown", "tool", name)
+		return "unknown tool " + name, true
+	}
+	started := time.Now()
+	out, err := tool.Call(ctx, input)
+	attrs := []any{"tool", name, "args", audit.Truncate(string(input), 1000), "duration_ms", time.Since(started).Milliseconds(), "result_bytes", len(out)}
+	if err != nil {
+		msg, _ := redact.Text(err.Error())
+		audit.Warn(ctx, "tool.call", append(attrs, "ok", false, "error", audit.Truncate(msg, 300))...)
+		return "tool error: " + msg, true
+	}
+	// Telemetry can contain secrets or personal data; scrub before the model sees it.
+	out, redactions := redact.Text(out)
+	audit.Log(ctx, "tool.call", append(attrs, "ok", true, "redactions", redactions)...)
+	if len(out) > maxToolResult {
+		out = out[:maxToolResult] + `... [truncated: result exceeded 64 KiB]`
+	}
+	return out, false
 }
 
-func Start(ctx context.Context, cfg Config) (*Runtime, error) {
-	path := cfg.CLIPath
-	if path == "" {
-		var err error
-		path, err = exec.LookPath("copilot")
+// Start builds the engine for cfg.Provider with telemetry and allowed MCP tools.
+func Start(ctx context.Context, cfg Config) (Engine, error) {
+	servers, err := LoadMCPConfig(cfg.MCPConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	mcpTools, closer, err := ConnectMCP(ctx, servers, os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	box := newToolbox(append(TelemetryTools(nil), mcpTools...))
+	switch cfg.Provider {
+	case "copilot":
+		e, err := startCopilot(ctx, cfg, box, closer)
 		if err != nil {
-			return nil, fmt.Errorf("Copilot CLI not found: install it or set COPILOT_CLI_PATH: %w", err)
+			closer()
 		}
+		return e, err
+	case "azure":
+		p, err := newAzureProvider(cfg)
+		if err != nil {
+			closer()
+			return nil, err
+		}
+		return newLoopEngine(cfg.Model, p, box, closer), nil
+	case "anthropic":
+		return newLoopEngine(cfg.Model, newAnthropicProvider(cfg), box, closer), nil
 	}
-	client := copilot.NewClient(&copilot.ClientOptions{Connection: copilot.StdioConnection{Path: path}, LogLevel: "error"})
-	if err := client.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start Copilot runtime: %w", err)
-	}
-	session, err := client.CreateSession(ctx, sessionConfig(ctx, cfg))
-	if err != nil {
-		_ = client.Stop()
-		return nil, fmt.Errorf("create observability session: %w", err)
-	}
-	return &Runtime{client: client, session: session}, nil
+	closer()
+	return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
 }
 
-func (r *Runtime) Investigate(ctx context.Context, prompt string) (string, error) {
-	turnCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	event, err := r.session.SendAndWait(turnCtx, copilot.MessageOptions{Prompt: prompt})
-	if err != nil {
-		abortCtx, abortCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer abortCancel()
-		_ = r.session.Abort(abortCtx)
-		return "", err
+// loopEngine runs a bounded tool-use loop. Each Investigate starts a fresh conversation.
+type loopEngine struct {
+	model    string
+	provider Provider
+	box      *toolbox
+	close    func()
+}
+
+func newLoopEngine(model string, p Provider, box *toolbox, closer func()) *loopEngine {
+	return &loopEngine{model: model, provider: p, box: box, close: closer}
+}
+
+func (e *loopEngine) Close() error {
+	if e.close != nil {
+		e.close()
 	}
-	if event == nil {
+	return nil
+}
+
+func (e *loopEngine) Investigate(ctx context.Context, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, investigationTO)
+	defer cancel()
+	prompt, _ = redact.Text(prompt)
+	session := e.provider.NewSession(instructions, e.box.order)
+	started := time.Now()
+	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "model", e.model, "tools", len(e.box.order))...)
+	var inTok, outTok int64
+	toolCalls := 0
+	done := func(outcome string, turns int) {
+		audit.Log(ctx, "agent.completed", "outcome", outcome, "turns", turns, "tool_calls", toolCalls,
+			"input_tokens", inTok, "output_tokens", outTok, "duration_ms", time.Since(started).Milliseconds())
+	}
+	in := Input{Prompt: prompt}
+	for turn := 1; turn <= maxTurns; turn++ {
+		reply, err := session.Send(ctx, in)
+		if err != nil {
+			done("model_error", turn)
+			return "", err
+		}
+		inTok += reply.InputTokens
+		outTok += reply.OutputTokens
+		if len(reply.ToolCalls) == 0 {
+			text, err := finalText(reply)
+			if err != nil {
+				done("no_response", turn)
+			} else {
+				done("answered", turn)
+			}
+			return text, err
+		}
+		in = Input{}
+		for _, call := range reply.ToolCalls {
+			toolCalls++
+			content, isErr := e.box.run(ctx, call.Name, call.Input)
+			in.Results = append(in.Results, ToolResult{CallID: call.ID, Content: content, IsError: isErr})
+		}
+	}
+	done("max_turns", maxTurns)
+	return "", fmt.Errorf("investigation did not finish within %d model turns", maxTurns)
+}
+
+func finalText(r Reply) (string, error) {
+	text := strings.TrimSpace(r.Text)
+	if text == "" {
 		return "", fmt.Errorf("agent completed without a response")
 	}
-	message, ok := event.Data.(*copilot.AssistantMessageData)
-	if !ok {
-		return "", fmt.Errorf("unexpected agent response")
+	if r.Truncated {
+		text += "\n\n[Response was cut off at the output token limit.]"
 	}
-	return message.Content, nil
+	return text, nil
 }
-func (r *Runtime) Close() error { _ = r.session.Disconnect(); return r.client.Stop() }

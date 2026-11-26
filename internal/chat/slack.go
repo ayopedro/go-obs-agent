@@ -6,12 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ayopedro/go-obs-agent/internal/audit"
 )
 
 type Slack struct {
@@ -34,6 +37,7 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifySlack(s.SigningSecret, r.Header.Get("X-Slack-Request-Timestamp"), r.Header.Get("X-Slack-Signature"), body, time.Now()) {
+		audit.Warn(r.Context(), "request.denied", "platform", "slack", "reason", "invalid signature", "remote_addr", r.RemoteAddr)
 		http.Error(w, "invalid signature", 401)
 		return
 	}
@@ -42,9 +46,9 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TeamID          string `json:"team_id"`
 		EventID         string `json:"event_id"`
 		Event           struct {
-			Type, Text, Channel, TS, Subtype string
-			ThreadTS                         string `json:"thread_ts"`
-			BotID                            string `json:"bot_id"`
+			Type, Text, Channel, TS, Subtype, User string
+			ThreadTS                               string `json:"thread_ts"`
+			BotID                                  string `json:"bot_id"`
 		}
 	}
 	if json.Unmarshal(body, &event) != nil {
@@ -57,6 +61,7 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if event.TeamID != s.WorkspaceID {
+		audit.Warn(r.Context(), "request.denied", "platform", "slack", "reason", "workspace not allowed", "team_id", event.TeamID)
 		http.Error(w, "workspace not allowed", 403)
 		return
 	}
@@ -73,7 +78,7 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if thread == "" {
 		thread = event.Event.TS
 	}
-	err = s.Service.Submit("slack:"+event.TeamID+":"+event.EventID, prompt, func(ctx context.Context, text string) error {
+	err = s.Service.Submit("slack:"+event.TeamID+":"+event.EventID, audit.Actor{Platform: "slack", Tenant: event.TeamID, Channel: event.Event.Channel, User: event.Event.User}, prompt, func(ctx context.Context, text string) error {
 		endpoint := s.apiURL
 		if endpoint == "" {
 			endpoint = "https://slack.com/api/chat.postMessage"
@@ -91,6 +96,10 @@ func (s *Slack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if errors.Is(err, ErrForbidden) {
+		w.WriteHeader(200) // acknowledge so the platform does not retry
+		return
+	}
 	if err != nil {
 		http.Error(w, "service busy; retry later", 503)
 		return
