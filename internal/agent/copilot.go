@@ -52,7 +52,7 @@ func copilotSessionConfig(ctx context.Context, cfg Config, box *toolbox) *copilo
 	return &copilot.SessionConfig{
 		Model: cfg.Model, Tools: tools, AvailableTools: set.ToSlice(),
 		ClientName: "go-obs-agent", EnableConfigDiscovery: copilot.Bool(false),
-		SystemMessage:       &copilot.SystemMessageConfig{Mode: "replace", Content: instructions},
+		SystemMessage:       &copilot.SystemMessageConfig{Mode: "replace", Content: currentInstructions()},
 		OnPermissionRequest: copilotPermission(box),
 	}
 }

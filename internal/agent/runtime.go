@@ -111,7 +111,7 @@ func (e *loopEngine) Investigate(ctx context.Context, prompt string) (string, er
 	ctx, cancel := context.WithTimeout(ctx, investigationTO)
 	defer cancel()
 	prompt, _ = redact.Text(prompt)
-	session := e.provider.NewSession(instructions, e.box.order)
+	session := e.provider.NewSession(currentInstructions(), e.box.order)
 	started := time.Now()
 	audit.Log(ctx, "agent.started", append(audit.Prompt(prompt), "model", e.model, "tools", len(e.box.order))...)
 	var inTok, outTok int64
