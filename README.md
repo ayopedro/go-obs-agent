@@ -1,37 +1,30 @@
 # go-obs-agent
 
 A Go observability agent that investigates incidents using Tempo traces,
-Prometheus metrics, and Loki logs. Telemetry functions are independent of the
-LLM runtime; GitHub Copilot SDK provides orchestration and configurable inference.
+Prometheus metrics, and Loki logs. It runs a small, bounded tool-use loop against
+Claude (Anthropic API) and can call additional tools from MCP servers.
 
 ## Project structure
 
 - `internal/telemetry` — plain Go functions: `AnalyzeTraces`, `QueryMetrics`, and
   `InspectLogs`, accepting `context.Context`, an injectable HTTP client, and typed
-  inputs. A nil client uses a 15-second timeout. No agent SDK dependency.
-- `internal/agent` — Copilot tool adapters, diagnostic instructions, configuration,
-  and session lifecycle.
+  inputs. A nil client uses a 15-second timeout. No agent dependency.
+- `internal/agent` — the tool-use loop, tool registry, MCP client, diagnostic
+  instructions, and configuration.
+- `internal/chat`, `cmd/server` — Slack and Teams adapters.
 - `cmd/api` — interactive console or one-shot incident investigation.
 
 ## Prerequisites
 
 - Go 1.26.2 or later.
-- Copilot CLI installed (`copilot` on PATH or `COPILOT_CLI_PATH` set).
-- For Copilot inference: authenticate using `copilot login` and have appropriate
-  Copilot access. Company policies must allow CLI/SDK use with incident telemetry.
+- An Anthropic API key and a Claude model that supports tool calling.
 - Running Tempo, Prometheus, and Loki containing the telemetry to investigate.
 
-The SDK is pinned in `go.mod`. See the [official Go SDK](https://github.com/github/copilot-sdk/tree/main/go)
-for compatible CLI setup and supported custom provider capabilities.
-
-## Run with Copilot
-
-From the repository root:
+## Run
 
 ```bash
-export LLM_PROVIDER=copilot
-# Optional: choose a model available to your Copilot account.
-# export LLM_MODEL=your-approved-model
+export LLM_MODEL=your-claude-model-id
+export LLM_API_KEY=your-anthropic-key
 export TEMPO_BASE_URL=http://localhost:3200
 export PROMETHEUS_BASE_URL=http://localhost:9090
 export LOKI_BASE_URL=http://localhost:3100
@@ -46,42 +39,40 @@ window where known. Use `/quit`, Ctrl+C, or EOF to exit. For one-shot use:
 go run ./cmd/api 'Investigate trace TRACE_ID for checkout; correlate errors with metrics and logs.'
 ```
 
-The app handles SIGTERM and cancels requests during shutdown. Each investigation
-has a five-minute deadline. The agent can use only the three telemetry tools;
-built-in shell, file-editing, and unrelated tools are excluded. Runtime config
-discovery is disabled. Requests requiring managed approval are denied rather
-than automatically approved.
+Each investigation has a five-minute deadline and at most 15 model turns. Tool
+errors are returned to the model rather than aborting the run, and each tool
+result is capped at 64 KiB. The app handles SIGTERM and cancels requests during
+shutdown. Only the telemetry tools and explicitly allowed MCP tools are available.
 
-## Custom model providers
+`LLM_BASE_URL` is optional (for a gateway or proxy). `.env.example` documents all
+settings; `.env` files are not loaded automatically, so export variables in your
+shell. Only Anthropic is supported.
 
-Keep the same telemetry functions and Copilot orchestration while choosing a
-custom inference endpoint. Supported provider types are `openai` (including
-compatible gateways/local servers), `azure`, and `anthropic`.
+## MCP tools
 
-```bash
-export LLM_PROVIDER=openai
-export LLM_MODEL=your-approved-model
-export LLM_BASE_URL=https://your-approved-gateway.example/v1
-export LLM_API_KEY=your-key
-# Optional for openai/azure: completions (SDK default) or responses.
-export LLM_WIRE_API=completions
+Set `MCP_CONFIG` to a JSON file listing remote (streamable HTTP) MCP servers:
 
-go run ./cmd/api
+```json
+{
+  "servers": [
+    {
+      "name": "pagerduty",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${PAGERDUTY_TOKEN}" },
+      "allowed_tools": ["list_incidents", "get_incident"]
+    }
+  ]
+}
 ```
 
-For Anthropic, use `LLM_PROVIDER=anthropic`, `LLM_BASE_URL=https://api.anthropic.com`,
-a tool-calling Claude model in `LLM_MODEL`, and your `LLM_API_KEY` (omit `LLM_WIRE_API`).
-
-Custom providers require a model and base URL. The API key is optional for
-endpoints that do not require it, such as local servers. For Azure, optionally
-set `LLM_AZURE_API_VERSION`; leave it empty for the SDK's default route. Use a
-model supporting tool calling. Custom inference uses the provider's credentials
-and billing, rather than a Copilot subscription; the Copilot CLI is still required.
-Actual model availability and endpoint compatibility depend on your provider.
-There is no automatic fallback to another provider.
-
-`.env.example` documents all settings. `.env` files are not loaded automatically;
-export variables in your shell. Gemini API keys and Google ADK are no longer used.
+- Only tools listed in `allowed_tools` are exposed; startup fails if one is
+  missing. There is no "allow all". Prefer read-only tools; a tool that changes
+  state would run without human approval.
+- Tools appear to the model as `mcp_<name>_<tool>`.
+- `${VAR}` in header values is read from the environment, so secrets stay out of
+  the file. Startup fails if a referenced variable is unset.
+- Local (stdio) MCP servers are not supported; use a remote server or a gateway.
+- Tool output is untrusted data to the model, like logs and span attributes.
 
 ## Telemetry behavior and limits
 
@@ -124,10 +115,11 @@ Terminal 1:
 go run ./cmd/demo
 ```
 
-Terminal 2 (authenticate with `copilot login` first if needed):
+Terminal 2:
 
 ```bash
-export LLM_PROVIDER=copilot
+export LLM_MODEL=your-claude-model-id
+export LLM_API_KEY=your-anthropic-key
 export TEMPO_BASE_URL=http://127.0.0.1:4319
 export PROMETHEUS_BASE_URL=http://127.0.0.1:4319
 export LOKI_BASE_URL=http://127.0.0.1:4319
@@ -138,7 +130,7 @@ go run ./cmd/api 'Investigate trace 0123456789abcdef0123456789abcdef for checkou
 Expected evidence: a failed `db.acquire_connection` span, active/max pool counts
 both 100, CPU usage 0.12, and a connection-pool timeout log. The agent should identify
 pool exhaustion, without asserting why the pool became exhausted. This run uses
-live model inference and your configured account's allowance or provider billing.
+live model inference billed to your Anthropic account.
 Stop the demo with Ctrl+C. Switch the three backend URLs back when testing real data.
 
 ## Teams and Slack
