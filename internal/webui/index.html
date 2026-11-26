@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>go-obs-agent</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 8rem; font: inherit; padding: .5rem; }
+  button { font: inherit; padding: .4rem 1rem; margin-top: .5rem; }
+  pre { white-space: pre-wrap; word-wrap: break-word; background: #f4f4f4; padding: 1rem; border-radius: 6px; }
+  .err { color: #b00020; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } pre { background: #222; } textarea { background: #1b1b1b; color: #eee; } }
+</style>
+<h1>Investigate</h1>
+<form id="f">
+  <textarea id="p" placeholder="e.g. Investigate trace 0123456789abcdef0123456789abcdef for checkout" required></textarea>
+  <button id="b">Investigate</button>
+</form>
+<p id="s" role="status"></p>
+<pre id="a" hidden></pre>
+<script>
+const f = document.getElementById('f'), p = document.getElementById('p'), b = document.getElementById('b'),
+      s = document.getElementById('s'), a = document.getElementById('a');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  b.disabled = true; a.hidden = true; s.className = ''; s.textContent = 'Investigating… this can take a few minutes.';
+  try {
+    const r = await fetch('/api/investigate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p.value }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    s.textContent = ''; a.textContent = j.answer; a.hidden = false;
+  } catch (err) {
+    s.className = 'err'; s.textContent = err.message;
+  } finally { b.disabled = false; }
+});
+</script>

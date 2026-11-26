@@ -163,5 +163,9 @@ Each accepted message runs a separate investigation and replies in the originati
 conversation. Setup, app manifest templates, and current hosting limits are in
 [Chat interfaces](docs/chat-interfaces.md). The local console remains available.
 
+For local testing without a chat platform, set `WEB_UI=true` and open
+`http://localhost:8080/`: a single page with a prompt box and the answer. It has
+no login and refuses non-localhost requests, so never expose it publicly.
+
 To deploy it (Docker, AWS ECS task definition, troubleshooting), see the
 [Deployment guide](docs/deployment.md).
