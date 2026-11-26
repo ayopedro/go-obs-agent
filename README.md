@@ -69,6 +69,9 @@ export LLM_WIRE_API=completions
 go run ./cmd/api
 ```
 
+For Anthropic, use `LLM_PROVIDER=anthropic`, `LLM_BASE_URL=https://api.anthropic.com`,
+a tool-calling Claude model in `LLM_MODEL`, and your `LLM_API_KEY` (omit `LLM_WIRE_API`).
+
 Custom providers require a model and base URL. The API key is optional for
 endpoints that do not require it, such as local servers. For Azure, optionally
 set `LLM_AZURE_API_VERSION`; leave it empty for the SDK's default route. Use a
@@ -144,3 +147,6 @@ Run `go run ./cmd/server` to expose authenticated Teams and Slack message adapte
 Each accepted message runs a separate investigation and replies in the originating
 conversation. Setup, app manifest templates, and current hosting limits are in
 [Chat interfaces](docs/chat-interfaces.md). The local console remains available.
+
+To deploy it (Docker, AWS ECS task definition, troubleshooting), see the
+[Deployment guide](docs/deployment.md).
