@@ -147,6 +147,15 @@ pool exhaustion, without asserting why the pool became exhausted. This run uses
 live model inference billed to your configured provider.
 Stop the demo with Ctrl+C. Switch the three backend URLs back when testing real data.
 
+Or with Docker Compose (copy `.env.example` to `.env` and set the `LLM_*` values first):
+
+```bash
+docker compose up -d demo
+docker compose run --rm api 'Investigate trace 0123456789abcdef0123456789abcdef for checkout.'
+docker compose --profile chat up server   # Slack/Teams server on 127.0.0.1:8080
+docker compose down
+```
+
 ## Teams and Slack
 
 Run `go run ./cmd/server` to expose authenticated Teams and Slack message adapters.

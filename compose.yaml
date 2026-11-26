@@ -1,0 +1,33 @@
+# Local testing against synthetic telemetry (cmd/demo), not a real Tempo/Prometheus/Loki.
+# The demo listens on loopback only, so api and server share its network namespace.
+#
+#   cp .env.example .env   # set the LLM_* values
+#   docker compose up -d demo
+#   docker compose run --rm api 'Investigate trace 0123456789abcdef0123456789abcdef for checkout ...'
+#   docker compose --profile chat up server   # Slack/Teams, published on :8080
+services:
+  demo:
+    build: { context: ., target: demo }
+    ports:
+      - "127.0.0.1:8080:8080" # chat server, shares this network namespace
+
+  api:
+    profiles: [cli]
+    build: { context: ., target: api }
+    network_mode: service:demo
+    env_file: .env
+    environment: &telemetry
+      TEMPO_BASE_URL: http://127.0.0.1:4319
+      PROMETHEUS_BASE_URL: http://127.0.0.1:4319
+      LOKI_BASE_URL: http://127.0.0.1:4319
+    depends_on: [demo]
+
+  server:
+    profiles: [chat]
+    build: { context: ., target: server }
+    network_mode: service:demo
+    env_file: .env
+    environment:
+      <<: *telemetry
+      HTTP_ADDR: 0.0.0.0:8080
+    depends_on: [demo]
