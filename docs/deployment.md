@@ -10,28 +10,33 @@ Slack / Teams  --HTTPS webhook-->  chat server  --> queue (32 jobs, 2 workers)
                                                         |
                                               agent loop (internal/agent)
                                          |             |                |
-                                  Anthropic API   telemetry tools    MCP tools
-                                                  (Tempo, Prometheus,  (remote servers,
-                                                   Loki)                allowlisted)
+                                  model provider  telemetry tools    MCP tools
+                                  (Azure OpenAI,  (Tempo, Prometheus,  (remote servers,
+                                   Copilot, ...)   Loki)                allowlisted)
                                                         |
 Slack / Teams  <-------------- reply posted back -------+
 ```
 
 - The server is an ordinary web service. Slack and Teams call it; it replies
   asynchronously after the investigation finishes.
-- The agent loop sends the conversation to Claude, runs the tools Claude asks for,
-  returns the results, and repeats until Claude answers (max 15 turns, 5 minutes).
-- It is a single static Go binary. No other runtime is needed.
-- Incident data is sent to Anthropic. Confirm that is approved for your data.
+- The agent loop sends the conversation to the model, runs the tools it asks for,
+  returns the results, and repeats until it answers (max 15 turns, 5 minutes).
+  With `LLM_PROVIDER=copilot` the Copilot runtime runs this loop instead.
+- `azure` and `anthropic` need only the static Go binary. `copilot` also needs
+  Node and the Copilot CLI (see Docker below).
+- Incident data is sent to the model provider you choose. Use only a provider
+  your organization has approved for it.
 
 ## Configuration
 
 All settings are environment variables; see `.env.example`.
 
 ```bash
-LLM_MODEL=<Claude model ID from your Anthropic console; must support tool calling>
-LLM_API_KEY=<secret>
-# LLM_BASE_URL is optional (gateway/proxy); empty uses the Anthropic API.
+LLM_PROVIDER=azure
+LLM_BASE_URL=https://YOUR-RESOURCE.openai.azure.com
+LLM_MODEL=<Azure OpenAI deployment name; must support function calling>
+LLM_API_KEY=<secret>   # omit on Azure hosting to use managed identity (Entra ID)
+# For copilot or anthropic, see the Model providers table in the README.
 
 TEMPO_BASE_URL=...
 PROMETHEUS_BASE_URL=...
@@ -52,7 +57,7 @@ required.
 | Slack | `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID` |
 | Teams | `TEAMS_APP_ID`, `TEAMS_APP_SECRET`, `TEAMS_TENANT_ID` |
 
-Keep secrets (`LLM_API_KEY`, Slack token and signing secret, Teams secret, and any
+Keep secrets (`LLM_API_KEY`, `COPILOT_GITHUB_TOKEN`, Slack token and signing secret, Teams secret, and any
 MCP tokens referenced as `${VAR}`) in a secret manager, never in the image,
 manifests, or git.
 
@@ -74,7 +79,7 @@ go run ./cmd/demo                      # terminal 1
 export TEMPO_BASE_URL=http://127.0.0.1:4319
 export PROMETHEUS_BASE_URL=http://127.0.0.1:4319
 export LOKI_BASE_URL=http://127.0.0.1:4319
-# set LLM_MODEL and LLM_API_KEY, then:
+# set LLM_PROVIDER and its settings, then:
 go run ./cmd/api 'Investigate trace 0123456789abcdef0123456789abcdef for checkout.'
 ```
 
@@ -101,7 +106,9 @@ container. `.env` is for local runs only; it is excluded from the image by
 `deploy/ecs-task-definition.json` is a template. Non-secret values are in
 `environment`; secrets are read from AWS Secrets Manager.
 
-1. Replace `ACCOUNT_ID`, `REGION`, and the `REPLACE_*` values. Set `LLM_MODEL`.
+1. Replace `ACCOUNT_ID`, `REGION`, and the `REPLACE_*` values (Azure OpenAI
+   endpoint and deployment name). Change `LLM_PROVIDER` if you do not use `azure`.
+   Outside Azure there is no managed identity, so keep `LLM_API_KEY` as a secret.
    Remove the Slack or Teams variables and secrets you do not use.
 2. Create an ECR repository, then build, tag, and push the image.
 3. Create the Secrets Manager secrets referenced in `secrets`, the
@@ -148,9 +155,12 @@ retention period on the CloudWatch log group; the service keeps no audit databas
 
 | Symptom | Likely cause |
 | --- | --- |
-| `LLM_MODEL and LLM_API_KEY are required` | Missing settings. |
-| `unsupported LLM_PROVIDER` | Only `anthropic` is supported; unset the variable. |
-| Investigation errors with a 401/404 from Anthropic | Wrong API key or model ID. |
+| `set LLM_PROVIDER to azure, copilot, or anthropic` | `LLM_PROVIDER` is required. |
+| `LLM_PROVIDER=azure requires LLM_MODEL ... and LLM_BASE_URL` | Set the deployment name and the HTTPS resource endpoint. |
+| Azure 401/403 | Wrong key, or Entra identity lacks the *Cognitive Services OpenAI User* role on the resource. |
+| Azure 404 | `LLM_MODEL` must be the deployment name (not the model name), and the API version must be supported by the resource. |
+| `Copilot CLI not found` | Use the `with-copilot` Docker target, or install the CLI and set `COPILOT_CLI_PATH`. |
+| Copilot auth errors | Set `COPILOT_GITHUB_TOKEN` for an account with Copilot access. |
 | `MCP server "x" must list allowed_tools` / `does not provide allowed tool` | Fix `MCP_CONFIG`; names must match the server's tool names. |
 | `header ... references unset variable` | An MCP header uses `${VAR}` that is not set. |
 | Server exits: `Slack requires ...` / `Teams requires ...` | Only some variables for that platform are set. |

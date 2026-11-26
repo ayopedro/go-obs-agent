@@ -28,7 +28,7 @@ go run ./cmd/server
 
 Expose the service through HTTPS and route the two platform endpoints to it.
 `GET /healthz` checks the HTTP process only, not credentials, LLM access, or backend
-health. The server needs `LLM_MODEL` and `LLM_API_KEY` (Anthropic); see the
+health. Configure `LLM_PROVIDER` and its settings; see the
 [Deployment guide](deployment.md).
 
 ## Slack

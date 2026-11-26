@@ -25,8 +25,16 @@
           "value": "0.0.0.0:8080"
         },
         {
+          "name": "LLM_PROVIDER",
+          "value": "azure"
+        },
+        {
+          "name": "LLM_BASE_URL",
+          "value": "https://REPLACE_WITH_RESOURCE.openai.azure.com"
+        },
+        {
           "name": "LLM_MODEL",
-          "value": "REPLACE_WITH_CLAUDE_MODEL_ID"
+          "value": "REPLACE_WITH_DEPLOYMENT_NAME"
         },
         {
           "name": "TEMPO_BASE_URL",
