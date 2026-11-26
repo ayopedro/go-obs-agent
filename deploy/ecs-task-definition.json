@@ -59,6 +59,10 @@
         {
           "name": "TEAMS_APP_ID",
           "value": "REPLACE_WITH_BOT_APP_ID"
+        },
+        {
+          "name": "ALLOWED_USERS",
+          "value": "REPLACE_WITH_COMMA_SEPARATED_USER_IDS"
         }
       ],
       "secrets": [
@@ -77,6 +81,30 @@
         {
           "name": "TEAMS_APP_SECRET",
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/teams-app-secret"
+        },
+        {
+          "name": "TEMPO_USERNAME",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/tempo-username"
+        },
+        {
+          "name": "TEMPO_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/tempo-password"
+        },
+        {
+          "name": "PROMETHEUS_USERNAME",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/prometheus-username"
+        },
+        {
+          "name": "PROMETHEUS_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/prometheus-password"
+        },
+        {
+          "name": "LOKI_USERNAME",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/loki-username"
+        },
+        {
+          "name": "LOKI_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:go-obs-agent/loki-password"
         }
       ],
       "stopTimeout": 30,
