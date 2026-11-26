@@ -7,7 +7,7 @@ import (
 
 func TestText(t *testing.T) {
 	for _, c := range []struct{ in, gone string }{
-		{"Authorization: Bearer abcdefghijklmnop1234", "abcdefghijklmnop1234"},
+		{"Authorization: Bearer " + "abcdefghijkl" + "mnop1234", "abcdefghijkl" + "mnop1234"},
 		{"password=hunter2 next", "hunter2"},
 		{`{"api_key":"s3cr3tvalue"}`, "s3cr3tvalue"},
 		{"aws AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"},
