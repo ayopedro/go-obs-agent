@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,5 +234,31 @@ func TestTeamsActivityQueuesReply(t *testing.T) {
 	teams.ServeHTTP(w, request(foreign))
 	if w.Code != 403 {
 		t.Fatal("foreign tenant accepted")
+	}
+}
+
+func TestAccessPolicy(t *testing.T) {
+	if _, err := ParseAccess("", " ", false); err == nil {
+		t.Fatal("empty allowlists must fail closed")
+	}
+	if a, err := ParseAccess("", "", true); err != nil || a != nil {
+		t.Fatalf("allow-all = %v, %v", a, err)
+	}
+	engine := &fakeInvestigator{}
+	s := testService(t, engine)
+	var err error
+	s.Access, err = ParseAccess("U1, U2", "C1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := func(context.Context, string) error { return nil }
+	for _, c := range []struct {
+		user, channel string
+		ok            bool
+	}{{"U1", "C1", true}, {"U3", "C1", false}, {"U1", "C2", false}} {
+		err := s.Submit("id-"+c.user+c.channel, audit.Actor{User: c.user, Channel: c.channel}, "hi", reply)
+		if c.ok != (err == nil) || (!c.ok && !errors.Is(err, ErrForbidden)) {
+			t.Fatalf("%+v: err = %v", c, err)
+		}
 	}
 }

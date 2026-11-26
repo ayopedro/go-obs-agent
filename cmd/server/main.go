@@ -41,7 +41,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	access, err := chat.ParseAccess(os.Getenv("ALLOWED_USERS"), os.Getenv("ALLOWED_CHANNELS"), os.Getenv("ACCESS_ALLOW_ALL") == "true")
+	if err != nil {
+		return err
+	}
 	service := chat.NewService(ctx, investigator{cfg})
+	service.Access = access
 	defer func() { stop(); service.Wait() }()
 	mux := http.NewServeMux()
 	client := chat.HTTPClient()
